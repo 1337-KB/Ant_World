@@ -2,16 +2,18 @@ class_name Pickup
 extends RigidBody3D
 
 # "slow" is how much a FULL stack (50) of this resource slows the ant.
-# Carrying a full stack of everything adds up to a 60% slowdown.
 const KINDS := {
 	"sugar":  {"label": "Sugar",      "color": Color(1.0, 0.85, 0.3),  "size": 0.25, "slow": 0.10},
 	"pebble": {"label": "Pebbles",    "color": Color(0.55, 0.55, 0.6), "size": 0.35, "slow": 0.30},
 	"fiber":  {"label": "Leaf fiber", "color": Color(0.35, 0.75, 0.3), "size": 0.30, "slow": 0.20},
 }
 
+signal depleted   # emitted when the last of it is taken
+
 var kind := "sugar"
+var home := Vector3.ZERO   # the spot it spawned at; it returns here if it ever falls out of the world
 var amount := 5            # how many units this pickup holds
-var mesh_node: MeshInstance3D
+var visual: Node3D
 
 func _ready() -> void:
 	add_to_group("pickups")
@@ -22,25 +24,66 @@ func _ready() -> void:
 	mat.albedo_color = info["color"]
 	mat.roughness = 0.8
 
-	mesh_node = MeshInstance3D.new()
+	visual = Node3D.new()
+	add_child(visual)
+
 	var col := CollisionShape3D.new()
-	if kind == "fiber":
-		var box := BoxMesh.new()
-		box.size = Vector3(s * 2.4, s * 0.5, s * 1.6)
-		mesh_node.mesh = box
-		var box_shape := BoxShape3D.new()
-		box_shape.size = box.size
-		col.shape = box_shape
-	else:
-		var sphere := SphereMesh.new()
-		sphere.radius = s
-		sphere.height = s * 2.0
-		mesh_node.mesh = sphere
-		var sphere_shape := SphereShape3D.new()
-		sphere_shape.radius = s
-		col.shape = sphere_shape
-	mesh_node.material_override = mat
-	add_child(mesh_node)
+	match kind:
+		"sugar":
+			# A cluster of glossy crystals.
+			mat.roughness = 0.15
+			mat.emission_enabled = true
+			mat.emission = Color(0.55, 0.38, 0.05)
+			for i in 4:
+				var crystal := MeshInstance3D.new()
+				var bm := BoxMesh.new()
+				var cs := s * randf_range(0.7, 1.1)
+				bm.size = Vector3(cs, cs * 1.4, cs)
+				crystal.mesh = bm
+				crystal.material_override = mat
+				crystal.position = Vector3(randf_range(-0.6, 0.6), randf_range(-0.3, 0.4), randf_range(-0.6, 0.6)) * s
+				crystal.rotation = Vector3(randf(), randf(), randf()) * TAU
+				visual.add_child(crystal)
+			var shape := SphereShape3D.new()
+			shape.radius = s
+			col.shape = shape
+		"pebble":
+			# A small heap of lumpy stones.
+			for i in 3:
+				var rock := MeshInstance3D.new()
+				var sm := SphereMesh.new()
+				sm.radius = s * (1.0 if i == 0 else 0.55)
+				sm.height = sm.radius * 2.0
+				sm.radial_segments = 7
+				sm.rings = 4
+				rock.mesh = sm
+				rock.material_override = mat
+				rock.scale = Vector3(1.0, randf_range(0.6, 0.85), randf_range(0.8, 1.0))
+				rock.rotation = Vector3(randf(), randf(), randf()) * TAU
+				if i > 0:
+					rock.position = Vector3(randf_range(-0.9, 0.9), -0.1, randf_range(-0.9, 0.9)) * s
+				visual.add_child(rock)
+			var shape := SphereShape3D.new()
+			shape.radius = s
+			col.shape = shape
+		_:
+			# Leaf fiber: a few flat curled chips stacked together.
+			for i in 3:
+				var chip := MeshInstance3D.new()
+				var cm := SphereMesh.new()
+				cm.radius = s * 1.2
+				cm.height = cm.radius * 2.0
+				cm.radial_segments = 10
+				cm.rings = 5
+				chip.mesh = cm
+				chip.material_override = mat
+				chip.scale = Vector3(1.0, 0.12, 0.6)
+				chip.position = Vector3(0, i * s * 0.18, 0)
+				chip.rotation = Vector3(randf_range(-0.2, 0.2), randf() * TAU, randf_range(-0.2, 0.2))
+				visual.add_child(chip)
+			var box_shape := BoxShape3D.new()
+			box_shape.size = Vector3(s * 2.4, s * 0.5, s * 1.6)
+			col.shape = box_shape
 	add_child(col)
 	update_look()
 
@@ -51,7 +94,7 @@ func _ready() -> void:
 
 # Bigger piles look bigger.
 func update_look() -> void:
-	mesh_node.scale = Vector3.ONE * (0.7 + 0.06 * amount)
+	visual.scale = Vector3.ONE * (0.7 + 0.06 * amount)
 
 # Remove up to n units. Returns how many were actually taken.
 func take(n: int) -> int:
@@ -60,6 +103,7 @@ func take(n: int) -> int:
 		return 0
 	amount -= got
 	if amount <= 0:
+		depleted.emit()
 		queue_free()
 	else:
 		update_look()
@@ -67,5 +111,9 @@ func take(n: int) -> int:
 
 func _physics_process(_delta: float) -> void:
 	if global_position.y < -20.0:
-		global_position.y = 30.0
 		linear_velocity = Vector3.ZERO
+		if home != Vector3.ZERO:
+			global_position = home
+			freeze = true
+		else:
+			global_position.y = 70.0

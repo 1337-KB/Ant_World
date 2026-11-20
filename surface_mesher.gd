@@ -20,10 +20,48 @@ const AXES = [Vector3i(1, 0, 0), Vector3i(0, 1, 0), Vector3i(0, 0, 1)]
 
 static func block_color(id: int) -> Color:
 	match id:
-		Blocks.STONE: return Color(0.5, 0.5, 0.5)
-		Blocks.DIRT: return Color(0.45, 0.3, 0.15)
-		Blocks.GRASS: return Color(0.3, 0.65, 0.2)
+		Blocks.STONE: return Color(0.48, 0.47, 0.45)
+		Blocks.DIRT: return Color(0.40, 0.27, 0.15)
+		Blocks.GRASS: return Color(0.30, 0.55, 0.18)
+		Blocks.CLAY: return Color(0.62, 0.38, 0.25)
+		Blocks.SAND: return Color(0.80, 0.72, 0.48)
+		Blocks.MUD: return Color(0.17, 0.12, 0.09)
+		Blocks.GRAVEL: return Color(0.55, 0.52, 0.47)
+		Blocks.CHALK: return Color(0.86, 0.85, 0.80)
 	return Color(1, 0, 1)  # magenta = unknown material
+
+# Final color of one vertex: base material color, then slope, veins, staining,
+# speckle, and depth. Uses world position so chunks match at their borders.
+static func vertex_color(mat: int, wp: Vector3, normal: Vector3,
+		vein_noise: FastNoiseLite, speck_noise: FastNoiseLite,
+		blotch_noise: FastNoiseLite) -> Color:
+	var base := block_color(mat)
+
+	# Steep grass turns into bare dirt.
+	if mat == Blocks.GRASS:
+		var steep := 1.0 - smoothstep(0.45, 0.75, normal.y)
+		base = base.lerp(block_color(Blocks.DIRT), steep)
+
+	# Thin, lighter veins running through stone.
+	if mat == Blocks.STONE:
+		var vein := 1.0 - smoothstep(0.0, 0.1, absf(vein_noise.get_noise_3d(wp.x, wp.y, wp.z)))
+		base = base.lerp(Color(0.72, 0.68, 0.58), vein * 0.8)
+
+	# Large soft patches: some areas stained warm (iron-rich), others cooler and greyer.
+	var blotch := blotch_noise.get_noise_3d(wp.x, wp.y, wp.z)
+	if blotch > 0.0:
+		base = base.lerp(Color(0.60, 0.38, 0.20), blotch * 0.35)
+	else:
+		base = base.lerp(Color(0.42, 0.45, 0.48), -blotch * 0.3)
+
+	# Fine speckle so no area is a flat color.
+	var shade := 1.0 + speck_noise.get_noise_3d(wp.x, wp.y, wp.z) * 0.18 + blotch * 0.1
+
+	# Deeper ground is darker.
+	var depth := 0.55 + 0.45 * smoothstep(8.0, 44.0, wp.y)
+
+	var k := shade * depth
+	return Color(base.r * k, base.g * k, base.b * k)
 
 static func _pidx(x: int, y: int, z: int) -> int:
 	return (x + 1) + (z + 1) * PAD + (y + 1) * PAD * PAD
@@ -36,17 +74,57 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 		return null
 	var origin := cpos * SIZE
 
+	var vein_noise := FastNoiseLite.new()
+	vein_noise.seed = 11
+	vein_noise.frequency = 0.12
+	var speck_noise := FastNoiseLite.new()
+	speck_noise.seed = 23
+	speck_noise.frequency = 0.35
+	var blotch_noise := FastNoiseLite.new()
+	blotch_noise.seed = 31
+	blotch_noise.frequency = 0.05
+	blotch_noise.fractal_octaves = 2
+
 	# 1. Copy samples into local arrays, including a 1-sample border from neighbors.
 	var dens := PackedFloat32Array()
 	var mats := PackedByteArray()
 	dens.resize(PAD * PAD * PAD)
 	mats.resize(PAD * PAD * PAD)
+	var any_solid := false
+	var any_air := false
+	# Fetch the 3x3x3 neighbor chunks once, then read samples straight from them.
+	# (Asking the world for every sample was the slow part of remeshing.)
+	var near: Array = []
+	for oy in range(-1, 2):
+		for oz in range(-1, 2):
+			for ox in range(-1, 2):
+				near.append(world.get_chunk(cpos + Vector3i(ox, oy, oz)))
 	for y in range(-1, SIZE + 1):
+		var cy := 0 if y >= 0 and y < SIZE else (-1 if y < 0 else 1)
+		var ly := y - cy * SIZE
 		for z in range(-1, SIZE + 1):
+			var cz := 0 if z >= 0 and z < SIZE else (-1 if z < 0 else 1)
+			var lz := z - cz * SIZE
 			for x in range(-1, SIZE + 1):
+				var cx := 0 if x >= 0 and x < SIZE else (-1 if x < 0 else 1)
+				var lx := x - cx * SIZE
 				var i := _pidx(x, y, z)
-				dens[i] = world.get_density(origin.x + x, origin.y + y, origin.z + z)
-				mats[i] = world.get_material(origin.x + x, origin.y + y, origin.z + z)
+				var ch = near[(cx + 1) + (cz + 1) * 3 + (cy + 1) * 9]
+				var d := -1.0
+				var m := Blocks.AIR
+				if ch != null:
+					d = ch.get_density(lx, ly, lz)
+					m = ch.get_material(lx, ly, lz)
+				dens[i] = d
+				mats[i] = m
+				if d > 0.0:
+					any_solid = true
+				else:
+					any_air = true
+
+	# All solid or all air means there is no surface here, so skip the meshing.
+	if not (any_solid and any_air):
+		return null
 
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
@@ -108,7 +186,8 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 				cell_vertex[_cidx(Vector3i(cx, cy, cz))] = verts.size()
 				verts.append(pos)
 				normals.append(normal)
-				colors.append(block_color(mat))
+				var wp := Vector3(origin) + pos
+				colors.append(vertex_color(mat, wp, normal, vein_noise, speck_noise, blotch_noise))
 
 	# 3. Connect vertices: each edge where density changes sign becomes one quad
 	#    made from the 4 cells that share that edge.
