@@ -16,7 +16,7 @@ const RECIPES := {
 		"cost": {"fiber": 20},
 		"size": Vector3(1.6, 1.2, 1.6),
 		"color": Color(0.55, 0.36, 0.18),
-		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "glow": 100, "silk": 100, "soil": 150},   # most one box holds of each
+		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "glow": 100, "silk": 100, "resin": 100, "soil": 150},   # most one box holds of each
 	},
 	"barrel": {
 		"label": "Water barrel",
@@ -40,8 +40,15 @@ const RECIPES := {
 		"size": Vector3(2.6, 1.8, 3.2),
 		"color": Color(0.86, 0.76, 0.6),
 	},
+	"trap": {
+		"label": "Silk trap",
+		"desc": "A sticky web. Spiders that walk into it are slowed to a crawl. Catches 3 spiders, then wears out.",
+		"cost": {"silk": 5},
+		"size": Vector3(2.6, 0.3, 2.6),
+		"color": Color(0.92, 0.95, 1.0),
+	},
 }
-const ORDER := ["box", "barrel", "lamp", "queen"]
+const ORDER := ["box", "barrel", "lamp", "queen", "trap"]
 
 var ant: Ant
 var items := {}              # item type -> how many you own
@@ -155,11 +162,21 @@ func build_menu() -> void:
 	note.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
 	col.add_child(note)
 
+	# The list scrolls, so it never grows taller than the screen however many recipes there are.
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(500, 360)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	col.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 12)
+	scroll.add_child(list)
+
 	for type in ORDER:
 		var info: Dictionary = RECIPES[type]
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
-		col.add_child(row)
+		list.add_child(row)
 
 		var text := VBoxContainer.new()
 		text.size_flags_horizontal = Control.SIZE_EXPAND_FILL

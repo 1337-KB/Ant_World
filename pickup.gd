@@ -7,6 +7,7 @@ const KINDS := {
 	"pebble": {"label": "Pebbles",    "color": Color(0.55, 0.55, 0.6), "size": 0.35, "slow": 0.30},
 	"fiber":  {"label": "Leaf fiber", "color": Color(0.35, 0.75, 0.3), "size": 0.30, "slow": 0.20},
 	"silk":   {"label": "Spider silk", "color": Color(0.92, 0.92, 0.96), "size": 0.25, "slow": 0.0},
+	"resin":  {"label": "Resin", "color": Color(0.95, 0.6, 0.12), "size": 0.26, "slow": 0.0},
 	"glow":   {"label": "Firefly glow", "color": Color(0.85, 1.0, 0.3), "size": 0.22, "slow": 0.0},
 }
 
@@ -84,6 +85,25 @@ func _ready() -> void:
 			var silk_shape := SphereShape3D.new()
 			silk_shape.radius = s
 			col.shape = silk_shape
+		"resin":
+			# A sticky amber drop that burns hot.
+			mat.roughness = 0.1
+			mat.emission_enabled = true
+			mat.emission = Color(0.8, 0.35, 0.05)
+			mat.emission_energy_multiplier = 0.7
+			for i in 3:
+				var drop := MeshInstance3D.new()
+				var rm := SphereMesh.new()
+				rm.radius = s * (1.0 if i == 0 else 0.6)
+				rm.height = rm.radius * 2.4
+				drop.mesh = rm
+				drop.material_override = mat
+				if i > 0:
+					drop.position = Vector3(randf_range(-0.8, 0.8), -0.1, randf_range(-0.8, 0.8)) * s
+				visual.add_child(drop)
+			var resin_shape := SphereShape3D.new()
+			resin_shape.radius = s
+			col.shape = resin_shape
 		"glow":
 			# A small glowing bead.
 			mat.roughness = 0.2

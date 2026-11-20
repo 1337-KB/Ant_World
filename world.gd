@@ -6,6 +6,7 @@ const BEDROCK_Y := 3
 
 var chunks := {}
 var last_removed := 0.0   # volume of ground removed by the latest dig
+var last_added := 0.0     # volume of ground added by the latest fill
 
 static func world_to_chunk(wx: int, wy: int, wz: int) -> Vector3i:
 	return Vector3i(
@@ -83,6 +84,35 @@ func dig_capsule(a: Vector3, b: Vector3, radius: float) -> Array[Vector3i]:
 					# Density -1..1 maps to how solid the sample is, 0..1.
 					last_removed += clampf(old_d * 0.5 + 0.5, 0.0, 1.0) - clampf(new_d * 0.5 + 0.5, 0.0, 1.0)
 
+	if not changed:
+		var empty: Array[Vector3i] = []
+		return empty
+	return _chunks_touching(lo, hi)
+
+# Build up solid ground in a sphere (the opposite of digging). New ground is dirt.
+# Returns the chunks whose meshes need rebuilding.
+func fill_sphere(center: Vector3, radius: float) -> Array[Vector3i]:
+	var pad := int(ceil(radius)) + 1
+	var c := Vector3i(floori(center.x), floori(center.y), floori(center.z))
+	var lo := c - Vector3i.ONE * pad
+	var hi := c + Vector3i.ONE * pad
+	var changed := false
+	last_added = 0.0
+	for x in range(lo.x, hi.x + 1):
+		for y in range(lo.y, hi.y + 1):
+			for z in range(lo.z, hi.z + 1):
+				if y < BEDROCK_Y:
+					continue
+				var dist := Vector3(x, y, z).distance_to(center)
+				var old_d := get_density(x, y, z)
+				var new_d := minf(maxf(old_d, radius - dist), 1.0)
+				if new_d > old_d:
+					var mat := get_material(x, y, z)
+					if old_d <= 0.0 and new_d > 0.0:
+						mat = Blocks.DIRT
+					set_voxel(x, y, z, new_d, mat)
+					changed = true
+					last_added += clampf(new_d * 0.5 + 0.5, 0.0, 1.0) - clampf(old_d * 0.5 + 0.5, 0.0, 1.0)
 	if not changed:
 		var empty: Array[Vector3i] = []
 		return empty

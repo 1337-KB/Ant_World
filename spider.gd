@@ -5,7 +5,7 @@ extends Creature
 # It walks on whatever ground is under it (hills, rocks, tunnel floors), found with rays.
 # It runs a little slower than a sprinting ant, so sprinting is how you escape.
 
-enum State { WANDER, CHASE, ATTACK, FLEE }
+enum State { WANDER, CHASE, ATTACK, FLEE, RAID }
 
 const WANDER_SPEED := 2.0
 const CHASE_SPEED := 5.5
@@ -17,11 +17,21 @@ const BITE_DAMAGE := 10.0
 const BITE_INTERVAL := 1.0
 const WANDER_RADIUS := 12.0
 const FLEE_BELOW := 0.3       # runs away when health falls below this fraction
+const QUEEN_SIGHT := 45.0     # smells the queen from this far away and goes for her
+const QUEEN_BITE_RANGE := 3.4 # measured to the queen's center, she is big
+const QUEEN_BITE_DAMAGE := 4.0
+const STUCK_SPEED := 0.1       # speed multiplier while stuck in a web
+const STUCK_SECONDS := 4.0
+const WEB_COOLDOWN := 2.5     # after breaking free, a spider ignores webs for a moment
+const ANT_PRIORITY := 9.0     # a raiding spider turns on an ant this close
 
 var state := State.WANDER
+var queen_getter: Callable   # returns the colony's queen (Placeable) or null. Set by main.
 var target := Vector3.ZERO
 var wait := 0.0
 var bite_cd := 0.0
+var stuck_time := 0.0
+var web_immunity := 0.0
 var flee_time := 0.0
 var time := 0.0
 var walk_phase := 0.0
@@ -141,6 +151,9 @@ func _physics_process(delta: float) -> void:
 		return   # hiding for the day
 	time += delta
 	bite_cd -= delta
+	stuck_time -= delta
+	web_immunity -= delta
+	check_webs()
 	moving = false
 
 	var to_ant := ant.global_position - global_position
@@ -150,8 +163,26 @@ func _physics_process(delta: float) -> void:
 		State.WANDER:
 			if dist < SIGHT_RANGE and can_see_ant():
 				state = State.CHASE
+			elif queen_in_reach():
+				state = State.RAID
 			else:
 				wander(delta)
+		State.RAID:
+			var q := get_queen()
+			if q == null or global_position.distance_to(q.global_position) > QUEEN_SIGHT * 1.3:
+				state = State.WANDER
+				pick_target()
+			elif dist < ANT_PRIORITY and can_see_ant():
+				state = State.CHASE
+			else:
+				var qd := global_position.distance_to(q.global_position)
+				if qd < QUEEN_BITE_RANGE:
+					face(q.global_position - global_position)
+					if bite_cd <= 0.0:
+						bite_cd = BITE_INTERVAL
+						q.take_damage(QUEEN_BITE_DAMAGE)
+				else:
+					walk_toward(q.global_position, CHASE_SPEED * 0.8, delta)
 		State.CHASE:
 			if dist > LOSE_RANGE:
 				state = State.WANDER
@@ -176,6 +207,31 @@ func _physics_process(delta: float) -> void:
 
 	stick_to_ground(delta)
 	animate(delta)
+
+# Walk into a silk trap and you get stuck for a few seconds.
+func check_webs() -> void:
+	if stuck_time > 0.0 or web_immunity > 0.0:
+		return
+	for t in get_tree().get_nodes_in_group("traps"):
+		var web := t as Placeable
+		var off := web.global_position - global_position
+		if Vector2(off.x, off.z).length() < Placeable.TRAP_RADIUS and absf(off.y) < 2.0:
+			if web.try_catch():
+				stuck_time = STUCK_SECONDS
+				web_immunity = STUCK_SECONDS + WEB_COOLDOWN
+				return
+
+func get_queen() -> Placeable:
+	if not queen_getter.is_valid():
+		return null
+	var q = queen_getter.call()
+	if is_instance_valid(q):
+		return q
+	return null
+
+func queen_in_reach() -> bool:
+	var q := get_queen()
+	return q != null and global_position.distance_to(q.global_position) < QUEEN_SIGHT
 
 func wander(delta: float) -> void:
 	if wait > 0.0:
@@ -204,7 +260,7 @@ func walk_toward(point: Vector3, speed: float, delta: float) -> void:
 	if flat.length() < 0.05:
 		return
 	flat = flat.normalized()
-	var step := speed * delta
+	var step := speed * delta * (STUCK_SPEED if stuck_time > 0.0 else 1.0)
 	var chosen := Vector3.ZERO
 	for turn in [0.0, 0.9, -0.9, 1.6, -1.6]:
 		var d := flat.rotated(up, turn)

@@ -136,6 +136,9 @@ var day_time := 0.08       # 0 = sunrise, 0.25 = noon, 0.5 = sunset, 0.75 = midn
 var day_count := 1
 var night_creatures := false   # true while night creatures (fireflies) are out
 var spray: CPUParticles3D
+var douse_fx: CPUParticles3D
+var fire_cd := 0.0
+var show_help := false   # F1 toggles the full controls list
 var health_bar: ProgressBar
 var acid_bar: ProgressBar
 var pickup_sites := []   # each: {pos, kind}
@@ -200,6 +203,7 @@ func _ready() -> void:
 	storage_ui.ant = ant
 	add_child(storage_ui)
 	setup_spray()
+	setup_douse()
 	scatter_fireflies()
 	scatter_spiders()
 	ant.died.connect(func(): show_message("You were killed. Respawned at your queen." if is_instance_valid(queen) else "You were killed. Respawned at the start."))
@@ -209,6 +213,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	ant.controls_locked = crafting.is_open or storage_ui.is_open
+	ant.has_queen = is_instance_valid(queen)
 	update_daynight(delta)
 	water_tint.visible = camera_underwater()
 	if ant.health < last_health - 0.01:
@@ -217,6 +222,7 @@ func _process(delta: float) -> void:
 	flash_rect.color.a = maxf(0.0, flash_rect.color.a - delta * 1.5)
 	handle_dig(delta)
 	handle_spray(delta)
+	handle_fire(delta)
 	process_remesh_queue()
 	handle_water(delta)
 	refresh_water(delta)
@@ -226,10 +232,10 @@ func _process(delta: float) -> void:
 	var cap := Ant.CAPACITY
 	var hours := fposmod(6.0 + day_time * 24.0, 24.0)
 	var text := "Day %d   %02d:%02d\n" % [day_count, int(hours), int((hours - floorf(hours)) * 60.0)]
-	text += "Carrying:  Sugar %d/%d   Pebbles %d/%d   Leaf fiber %d/%d   Glow %d/%d   Silk %d/%d\n" % [
-		inv["sugar"], cap, inv["pebble"], cap, inv["fiber"], cap, inv["glow"], cap, inv["silk"], cap]
-	text += "Stored:      Sugar %d   Pebbles %d   Leaf fiber %d   Glow %d   Silk %d   Soil %d   Water %d\n" % [
-		stored("sugar"), stored("pebble"), stored("fiber"), stored("glow"), stored("silk"), stored("soil"), stored("water")]
+	text += "Carrying:  Sugar %d/%d   Pebbles %d/%d   Leaf fiber %d/%d   Glow %d/%d   Silk %d/%d   Resin %d/%d\n" % [
+		inv["sugar"], cap, inv["pebble"], cap, inv["fiber"], cap, inv["glow"], cap, inv["silk"], cap, inv["resin"], cap]
+	text += "Stored:      Sugar %d   Pebbles %d   Leaf fiber %d   Glow %d   Silk %d   Resin %d   Soil %d   Water %d\n" % [
+		stored("sugar"), stored("pebble"), stored("fiber"), stored("glow"), stored("silk"), stored("resin"), stored("soil"), stored("water")]
 
 	if build_mode:
 		text += "\nBUILD MODE\n"
@@ -245,13 +251,19 @@ func _process(delta: float) -> void:
 		if held != "":
 			text += "Holding: %s\n[Left click] place   [Right click] pick up   [Same number] put away   [R] rotate" % Crafting.RECIPES[held]["label"]
 		else:
-			text += "[Walk over resources] collect   [E at a box or barrel] open it   [Hold click] dig   [Hold right click] smooth   [Hold F] drink   [Hold G] acid spray   [Shift] sprint   [N] skip 3 hours\n[C] craft   [1-9] hold an item   [B] build   [K] respawn"
+			if show_help:
+				text += "[Hold click] dig   [Hold X + click] fill   [Hold right click] smooth   [E] open box or barrel\n"
+				text += "[Hold F] drink   [Hold G] acid spray   [H] light fire   [Hold J] douse   [T] eat sugar   [Q] feed queen\n"
+				text += "[Shift] sprint   [C] craft   [1-9] hold item   [B] build   [N] skip 3 hours   [K] respawn   [F1] hide help"
+			else:
+				text += "[F1] controls   [C] craft   [B] build"
 
 	if not water_source.is_empty():
 		text += "\n[Hold F] drink water"
 	if message_time > 0.0:
 		text += "\n" + message
 	hud.text = text
+	hud.visible = not (crafting.is_open or storage_ui.is_open)
 
 	soil_bar.value = ant.soil
 	(soil_bar.get_child(0) as Label).text = "Soil  %d / %d" % [int(ant.soil), int(Ant.SOIL_CAPACITY)]
@@ -359,8 +371,15 @@ func _unhandled_input(event: InputEvent) -> void:
 					crafting.select_slot(n)
 			KEY_R:
 				yaw += PI / 2.0
+			KEY_T:
+				if not ant.eat_sugar():
+					show_message("Nothing to eat, or you are at full health. You need sugar on you.")
+			KEY_Q:
+				feed_queen()
 			KEY_N:
 				day_time = fposmod(day_time + 0.125, 1.0)
+			KEY_F1:
+				show_help = not show_help
 			KEY_K:
 				ant.respawn()
 				show_message("Respawned at your queen." if is_instance_valid(queen) else "Respawned at the start. Place a queen to set your spawn.")
@@ -430,6 +449,11 @@ func handle_dig(delta: float) -> void:
 			show_message("The ground here is too hard to dig.")
 		return
 
+	if digging and Input.is_key_pressed(KEY_X):
+		has_last_dig = false
+		fill_ground(point, -cam.global_transform.basis.z)
+		return
+
 	var dirty: Array[Vector3i]
 	var clear_radius := SMOOTH_RADIUS + 1.0
 	if digging:
@@ -455,6 +479,36 @@ func handle_dig(delta: float) -> void:
 	clear_decor_near(point, clear_radius)
 	wake_pickups(point, clear_radius)
 	mark_water_dirty(point, clear_radius)
+
+# Hold X and click to spend carried soil and build ground back up where you aim.
+const FILL_RADIUS := 1.8
+const WATER_PER_FILL := 0.25   # water spent per unit of ground added. Dry soil will not pack, so it needs mixing into mud.
+
+func fill_ground(point: Vector3, aim: Vector3) -> void:
+	if ant.soil < 1.0:
+		show_message("No soil. Dig some first, then hold X and click to fill.")
+		dig_cooldown = 0.6
+		return
+	if ant.water < 1.0:
+		show_message("No water. Soil needs water to pack into mud. Drink at a pool (hold F) first.")
+		dig_cooldown = 0.6
+		return
+	# Center the blob a little in front of the surface so it grows outward from it.
+	var center := point - aim.normalized() * FILL_RADIUS * 0.7
+	if ant.global_position.distance_to(center) < FILL_RADIUS + 0.9 \
+			or (ant.global_position + ant.basis.y * 0.4).distance_to(center) < FILL_RADIUS + 0.9:
+		show_message("You are in the way. Step back to fill here.")
+		dig_cooldown = 0.6
+		return
+	var dirty := world.fill_sphere(center, FILL_RADIUS)
+	if dirty.is_empty():
+		return
+	ant.soil = maxf(0.0, ant.soil - world.last_added * SOIL_PER_VOLUME)
+	ant.water = maxf(0.0, ant.water - world.last_added * WATER_PER_FILL)
+	dig_cooldown = DIG_INTERVAL
+	queue_remesh(dirty, center)
+	wake_pickups(center, FILL_RADIUS + 1.0)
+	mark_water_dirty(center, FILL_RADIUS + 1.0)
 
 # Only a thin slab of ground is locked, so water and trees always have something under them.
 # Pools and pockets lock the layer under their water, and trees and boulders lock the ground
@@ -565,9 +619,41 @@ func place_item() -> void:
 	p.global_transform = ghost_xform
 	if held == "queen":
 		queen = p
+		p.destroyed.connect(_on_queen_destroyed)
+		p.attacked.connect(_on_queen_attacked)
 		ant.spawn_point = p.global_position + Vector3(0, 2.5, 0)
 		show_message("The queen is placed. You will respawn here.")
 	crafting.consume_held()
+
+var queen_alarm_cd := 0.0
+
+func _on_queen_attacked() -> void:
+	var now := Time.get_ticks_msec() / 1000.0
+	if now >= queen_alarm_cd:
+		queen_alarm_cd = now + 8.0
+		show_message("The queen is under attack!")
+
+# Press T to eat sugar, Q next to the queen to feed her sugar.
+func feed_queen() -> void:
+	if not is_instance_valid(queen):
+		show_message("You have no queen to feed.")
+	elif ant.global_position.distance_to(queen.global_position) > 6.0:
+		show_message("Get closer to the queen to feed her.")
+	elif queen.health >= Placeable.QUEEN_MAX_HEALTH:
+		show_message("The queen is at full health.")
+	elif int(ant.inventory["sugar"]) <= 0:
+		show_message("You need sugar on you to feed her.")
+	else:
+		ant.inventory["sugar"] = int(ant.inventory["sugar"]) - 1
+		queen.feed(Placeable.SUGAR_HEAL)
+
+# Spiders killed the queen. She is gone and you must craft a new one.
+func _on_queen_destroyed(p: Placeable) -> void:
+	if p == queen:
+		queen = null
+		ant.spawn_point = Vector3(0, 70, 0)
+	show_message("YOUR QUEEN WAS KILLED! Craft a new queen to restore your colony.")
+	p.queue_free()
 
 func pick_up_item() -> void:
 	if target_placeable == null:
@@ -1294,6 +1380,106 @@ func handle_spray(delta: float) -> void:
 		if d < SPRAY_RANGE and d > 0.01 and to_c.normalized().dot(aim) > 0.88:
 			(c as Creature).take_damage(SPRAY_DPS * delta)
 
+# ---------- Fire ----------
+# Fires only start when the ant lights one with resin (H). They burn, spread over grass,
+# and hurt anything in them. Water (hold J) puts them out.
+
+const FIRE_CAP := 30
+const FIRE_RANGE := 9.0
+const DOUSE_RANGE := 9.0
+const WATER_DRAIN := 25.0   # water used per second of dousing
+
+func setup_douse() -> void:
+	douse_fx = CPUParticles3D.new()
+	douse_fx.emitting = false
+	douse_fx.amount = 90
+	douse_fx.lifetime = 0.5
+	douse_fx.local_coords = false
+	douse_fx.direction = Vector3(0, 0, -1)
+	douse_fx.spread = 10.0
+	douse_fx.initial_velocity_min = 12.0
+	douse_fx.initial_velocity_max = 16.0
+	douse_fx.gravity = Vector3(0, -6.0, 0)
+	var drop := SphereMesh.new()
+	drop.radius = 0.1
+	drop.height = 0.2
+	drop.radial_segments = 6
+	drop.rings = 3
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.35, 0.65, 1.0, 0.85)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	drop.material = mat
+	douse_fx.mesh = drop
+	add_child(douse_fx)
+
+func handle_fire(delta: float) -> void:
+	fire_cd -= delta
+	var active := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not ant.controls_locked and not build_mode
+	if active and fire_cd <= 0.0 and Input.is_key_pressed(KEY_H):
+		fire_cd = 0.6
+		light_fire()
+
+	var dousing := active and Input.is_key_pressed(KEY_J) and ant.water > 0.0
+	douse_fx.emitting = dousing
+	if not dousing:
+		return
+	ant.water = maxf(0.0, ant.water - WATER_DRAIN * delta)
+	var cam := ant.camera
+	var aim := -cam.global_transform.basis.z
+	var origin := ant.global_position + ant.basis.y * 0.7
+	douse_fx.global_transform = Transform3D(Basis.looking_at(aim, ant.basis.y), origin)
+	for f in get_tree().get_nodes_in_group("fires"):
+		var to_f: Vector3 = (f as Node3D).global_position - origin
+		var d := to_f.length()
+		if d < DOUSE_RANGE and d > 0.01 and to_f.normalized().dot(aim) > 0.8:
+			(f as Fire).douse(delta)
+
+func light_fire() -> void:
+	if int(ant.inventory["resin"]) <= 0:
+		show_message("You need resin to light a fire. Collect the amber drops.")
+		return
+	var cam := ant.camera
+	var hit = world.raycast(cam.global_position, -cam.global_transform.basis.z, FIRE_RANGE)
+	if hit == null:
+		show_message("Aim at the ground to light a fire.")
+		return
+	var pos: Vector3 = (hit as Vector3) + Vector3(0, 0.15, 0)
+	if spawn_fire(pos):
+		ant.inventory["resin"] = int(ant.inventory["resin"]) - 1
+		show_message("Fire lit. Hold J to put it out with water.")
+
+# Returns true if a fire was started.
+func spawn_fire(pos: Vector3) -> bool:
+	if get_tree().get_nodes_in_group("fires").size() >= FIRE_CAP:
+		return false
+	if water_surface_at(pos + Vector3(0, 0.3, 0)) > -1.0e8:
+		return false   # nothing burns in water
+	for f in get_tree().get_nodes_in_group("fires"):
+		if (f as Node3D).global_position.distance_to(pos) < 1.2:
+			return false
+	var fire := Fire.new()
+	fire.ant = ant
+	fire.queen_getter = func(): return queen
+	fire.spread_cb = spread_fire
+	add_child(fire)
+	fire.global_position = pos
+	clear_decor_near(pos, 1.8)   # the grass here burns away
+	return true
+
+# Fire creeps across grass, and only across grass.
+func spread_fire(from: Vector3) -> void:
+	var ang := randf() * TAU
+	var dist := randf_range(1.8, 3.0)
+	var x := from.x + cos(ang) * dist
+	var z := from.z + sin(ang) * dist
+	if absf(x) > HALF - 1.0 or absf(z) > HALF - 1.0 or surface_kind(x, z) != Blocks.GRASS:
+		return
+	var hit = world.raycast(Vector3(x, from.y + 4.0, z), Vector3.DOWN, 10.0)
+	if hit == null:
+		return
+	spawn_fire((hit as Vector3) + Vector3(0, 0.15, 0))
+
 func scatter_fireflies() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 808
@@ -1325,6 +1511,7 @@ func scatter_spiders() -> void:
 func spawn_spider(pos: Vector3) -> void:
 	var sp := Spider.new()
 	sp.ant = ant
+	sp.queen_getter = func(): return queen
 	sp.ground_at = ground_height
 	sp.home = pos
 	sp.died.connect(_on_creature_died)
@@ -1727,7 +1914,7 @@ func scatter_pebbles() -> void:
 func scatter_pickups() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 42
-	var kinds: Array[String] = ["sugar", "pebble", "fiber"]
+	var kinds: Array[String] = ["sugar", "pebble", "fiber", "resin"]
 	var tries := 0
 	while pickup_sites.size() < PICKUP_SITES and tries < 600:
 		tries += 1
@@ -1739,7 +1926,7 @@ func scatter_pickups() -> void:
 			continue
 		pickup_sites.append({
 			"pos": Vector3(x, ground_height(x, z) + 0.3, z),
-			"kind": kinds[pickup_sites.size() % 3],
+			"kind": kinds[pickup_sites.size() % 4],
 		})
 	for i in pickup_sites.size():
 		spawn_pickup(i)

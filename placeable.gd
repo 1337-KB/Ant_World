@@ -7,8 +7,26 @@ extends StaticBody3D
 var type := "box"
 var stock := {}   # what a box or barrel holds: kind -> amount
 
+# The queen can be hurt. If her health reaches zero she dies and the colony loses her.
+signal destroyed(p: Placeable)
+signal attacked
+const QUEEN_MAX_HEALTH := 400.0
+const QUEEN_REGEN := 1.0          # she heals herself, but slowly (health per second)
+const QUEEN_REGEN_DELAY := 10.0   # only after this many seconds without being bitten
+const SUGAR_HEAL := 25.0          # health she gains from one sugar you feed her
+var health := QUEEN_MAX_HEALTH
+var since_hit := 99.0
+var health_label: Label3D
+
+# Silk trap: catches spiders, a few times, then wears out.
+const TRAP_USES := 3
+const TRAP_RADIUS := 1.5
+const TRAP_HOLD_SECONDS := 4.0
+var uses_left := TRAP_USES
+var web: Node3D
+
 func _ready() -> void:
-	collision_layer = 5   # layers 1 and 4, same as building pieces
+	collision_layer = 0 if type == "trap" else 5   # layers 1 and 4, same as building pieces. Traps are walked over.
 	collision_mask = 0
 
 	var info: Dictionary = Crafting.RECIPES[type]
@@ -22,6 +40,53 @@ func _ready() -> void:
 	dark.albedo_color = Color(info["color"]).darkened(0.45)
 	dark.roughness = 0.8
 
+	if type == "trap":
+		add_to_group("traps")
+		web = Node3D.new()
+		add_child(web)
+		var web_mat := StandardMaterial3D.new()
+		web_mat.albedo_color = Color(0.95, 0.97, 1.0, 0.55)
+		web_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		web_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		web_mat.roughness = 0.4
+		web_mat.emission_enabled = true
+		web_mat.emission = Color(0.8, 0.85, 1.0)
+		web_mat.emission_energy_multiplier = 0.4
+		# A flat disc with rings and spokes so it reads as a web.
+		var disc := MeshInstance3D.new()
+		var dm := CylinderMesh.new()
+		dm.top_radius = TRAP_RADIUS * 0.95
+		dm.bottom_radius = TRAP_RADIUS * 0.95
+		dm.height = 0.04
+		disc.mesh = dm
+		disc.material_override = web_mat
+		disc.position.y = -size.y * 0.35
+		web.add_child(disc)
+		var line_mat := StandardMaterial3D.new()
+		line_mat.albedo_color = Color(1, 1, 1)
+		line_mat.emission_enabled = true
+		line_mat.emission = Color(1, 1, 1)
+		line_mat.emission_energy_multiplier = 0.6
+		for i in 8:
+			var spoke := MeshInstance3D.new()
+			var sb := BoxMesh.new()
+			sb.size = Vector3(TRAP_RADIUS * 1.9, 0.05, 0.05)
+			spoke.mesh = sb
+			spoke.material_override = line_mat
+			spoke.rotation.y = PI * float(i) / 8.0
+			spoke.position.y = -size.y * 0.3
+			web.add_child(spoke)
+		for r in [0.35, 0.65, 0.95]:
+			var ring := MeshInstance3D.new()
+			var tm := TorusMesh.new()
+			tm.inner_radius = TRAP_RADIUS * r - 0.03
+			tm.outer_radius = TRAP_RADIUS * r + 0.03
+			ring.mesh = tm
+			ring.material_override = line_mat
+			ring.scale.y = 0.5
+			ring.position.y = -size.y * 0.3
+			web.add_child(ring)
+		return   # no collision shape: ants and spiders walk straight over it
 	if type == "queen":
 		var skin := StandardMaterial3D.new()
 		skin.albedo_color = info["color"]
@@ -52,6 +117,14 @@ func _ready() -> void:
 		tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		tag.position = Vector3(0, size.y * 0.5 + 0.9, 0)
 		add_child(tag)
+		health_label = Label3D.new()
+		health_label.font_size = 40
+		health_label.pixel_size = 0.016
+		health_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		health_label.no_depth_test = true
+		health_label.position = Vector3(0, size.y * 0.5 + 0.35, 0)
+		add_child(health_label)
+		update_health_label()
 	elif type == "lamp":
 		# A small stand holding a glowing bead of firefly glow.
 		var base := MeshInstance3D.new()
@@ -89,7 +162,7 @@ func _ready() -> void:
 		light.light_color = Color(0.8, 1.0, 0.35)
 		light.light_energy = 1.8
 		light.omni_range = 13.0
-		light.shadow_enabled = true   # set true for shadows, but many lamps with shadows gets slow
+		light.shadow_enabled = false   # set true for shadows, but many lamps with shadows gets slow
 		light.position.y = size.y * 0.25
 		add_child(light)
 	elif type == "barrel":
@@ -139,6 +212,48 @@ func _ready() -> void:
 	shape.size = size
 	col.shape = shape
 	add_child(col)
+
+# A spider touched the web. Returns true if it got stuck. The web shrinks as it wears out.
+func try_catch() -> bool:
+	if type != "trap" or uses_left <= 0:
+		return false
+	uses_left -= 1
+	if uses_left <= 0:
+		get_tree().create_timer(TRAP_HOLD_SECONDS).timeout.connect(queue_free)
+		web.scale = Vector3.ONE * 0.5
+	else:
+		web.scale = Vector3.ONE * (0.55 + 0.45 * float(uses_left) / float(TRAP_USES))
+	return true
+
+func feed(amount: float) -> void:
+	health = minf(QUEEN_MAX_HEALTH, health + amount)
+	update_health_label()
+
+func take_damage(amount: float) -> void:
+	if type != "queen" or health <= 0.0:
+		return
+	health -= amount
+	since_hit = 0.0
+	attacked.emit()
+	update_health_label()
+	if health <= 0.0:
+		destroyed.emit(self)
+
+func _process(delta: float) -> void:
+	if type != "queen" or health <= 0.0:
+		return
+	since_hit += delta
+	if since_hit > QUEEN_REGEN_DELAY and health < QUEEN_MAX_HEALTH:
+		health = minf(QUEEN_MAX_HEALTH, health + QUEEN_REGEN * delta)
+		update_health_label()
+
+func update_health_label() -> void:
+	if health_label == null:
+		return
+	var frac := clampf(health / QUEEN_MAX_HEALTH, 0.0, 1.0)
+	var filled := roundi(frac * 10.0)
+	health_label.text = "[" + "|".repeat(filled) + ".".repeat(10 - filled) + "]"
+	health_label.modulate = Color(0.4, 1.0, 0.4).lerp(Color(1.0, 0.3, 0.2), 1.0 - frac)
 
 # The most this item can hold of one kind of thing (0 if it can't hold it).
 func cap(kind: String) -> float:

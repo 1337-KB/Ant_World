@@ -29,7 +29,10 @@ const WADE_SLOW := 0.6       # walking speed in water, as a fraction of normal
 const SWIM_SPEED := 3.6      # swimming speed
 const FLOAT_DEPTH := 0.35    # how far under the surface the body rests when you just float
 const ACID_MAX := 100.0
-const HEALTH_REGEN := 0.5    # health gained per second
+const HEALTH_REGEN := 0.5    # health gained per second, but only while the colony has a queen
+const REGEN_CAP := 60.0      # the queen only heals you up to here. Above it you must eat sugar.
+const SUGAR_HEAL := 15.0     # health from eating one sugar (press T)
+const NO_QUEEN_RESPAWN_HEALTH := 30.0
 const SPRINT_MULT := 1.7     # sprint speed compared with walking
 const ENERGY_MAX := 100.0
 const SPRINT_DRAIN := 25.0   # energy used per second while sprinting (4 seconds from full)
@@ -46,6 +49,7 @@ var look_pitch := 0.0        # mouse tilting waiting to be applied
 var key_turn := 0.0          # current A/D turning speed
 var spawn_point := Vector3(0, 70, 0)   # where you respawn (the queen, once placed)
 var health := MAX_HEALTH
+var has_queen := false   # set by main every frame
 var water_surface: Callable   # (position) -> water level there, or a very low number if not in water. Set by main.
 var swimming := false
 var acid := ACID_MAX          # fuel for the acid spray
@@ -54,7 +58,7 @@ var energy := ENERGY_MAX      # sprint energy
 var exhausted := false       # true after running out, until energy recovers
 var sprinting := false
 var controls_locked := false   # true while a menu is open: no walking, jumping, or depositing
-var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0}
+var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0, "resin": 0}
 var soil := 0.0              # filled by digging
 var water := 0.0             # filled by drinking at pools
 
@@ -221,7 +225,8 @@ func _input(event: InputEvent) -> void:
 		deposit_requested.emit()
 
 func _process(delta: float) -> void:
-	health = minf(MAX_HEALTH, health + HEALTH_REGEN * delta)
+	if has_queen and health < REGEN_CAP:
+		health = minf(REGEN_CAP, health + HEALTH_REGEN * delta)
 	# Apply a fraction of the queued mouse movement each frame, so looking is soft.
 	var k := minf(1.0, MOUSE_SMOOTH * delta)
 	var step_yaw := look_yaw * k
@@ -397,8 +402,16 @@ func take_damage(amount: float) -> void:
 		died.emit()
 		respawn()
 
+# Eat one sugar from what you carry. Returns true if it worked.
+func eat_sugar() -> bool:
+	if int(inventory["sugar"]) <= 0 or health >= MAX_HEALTH:
+		return false
+	inventory["sugar"] = int(inventory["sugar"]) - 1
+	health = minf(MAX_HEALTH, health + SUGAR_HEAL)
+	return true
+
 func respawn() -> void:
-	health = MAX_HEALTH
+	health = REGEN_CAP if has_queen else NO_QUEEN_RESPAWN_HEALTH
 	global_position = spawn_point
 	basis = Basis.IDENTITY
 	velocity = Vector3.ZERO
