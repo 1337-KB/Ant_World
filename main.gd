@@ -3,6 +3,7 @@ extends Node3D
 const HALF := 32
 const HEIGHT_CHUNKS := 4      # the world is 16 * this many units tall
 const SURFACE_BASE := 44.0     # roughly how high the ground surface sits
+const POCKET_MIN_DEPTH := 22.0   # underground water starts at least this far below the surface
 const WATER_POCKETS := 7       # how many underground water pockets to try to place
 const POOLS := 4               # how many pools of water on the surface
 const SOIL_PER_VOLUME := 0.5   # soil gained per unit of ground dug out
@@ -18,6 +19,15 @@ const DIG_INTERVAL := 0.14     # seconds between digs while holding
 const REACH := 30.0
 const STORAGE_XZ := Vector2(8, 8)
 const STORAGE_RADIUS := 3.0
+const FIREFLIES := 12                 # how many fireflies live in the field
+const FIREFLY_RESPAWN_SECONDS := 60.0
+const SPRAY_RANGE := 10.0              # how far the acid spray reaches
+const SPRAY_DPS := 25.0                # damage per second to what it hits
+const ACID_DRAIN := 25.0               # acid used per second of spraying
+const ACID_REGEN := 12.0               # acid regained per second when not spraying
+const DAY_LENGTH := 600.0              # seconds for a full day and night (10 minutes)
+const SPIDERS := 4
+const SPIDER_RESPAWN_SECONDS := 120.0
 const PICKUP_SITES := 45               # how many places resources can appear
 const PICKUP_RESPAWN_SECONDS := 90.0   # how long a spot takes to grow its resource back
 const PIECE_ORDER := ["pebble_wall", "fiber_floor", "pillar"]
@@ -49,8 +59,8 @@ void vertex() {
 }
 
 void fragment() {
-	vec3 base = mix(vec3(0.18, 0.42, 0.10), vec3(0.45, 0.62, 0.15), rnd);
-	ALBEDO = mix(base * 0.5, base * 1.2, tip);
+	vec3 base = mix(vec3(0.10, 0.55, 0.06), vec3(0.40, 0.80, 0.10), rnd);
+	ALBEDO = mix(base * 0.6, base * 1.35, tip);
 	ROUGHNESS = 0.85;
 }
 """
@@ -60,6 +70,7 @@ const WATER_SHADER = """
 shader_type spatial;
 render_mode cull_disabled;
 
+uniform sampler2D depth_tex : hint_depth_texture, repeat_disable, filter_nearest;
 varying vec3 wpos;
 
 void vertex() {
@@ -67,6 +78,15 @@ void vertex() {
 }
 
 void fragment() {
+	// How much water lies between the surface and whatever is behind it.
+	float d = texture(depth_tex, SCREEN_UV).x;
+	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, d);
+	vec4 v = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+	v.xyz /= v.w;
+	float thick = max(0.0, (-v.z) - (-VERTEX.z));
+	float deep = 1.0 - exp(-thick * 0.55);
+
+	// Gentle moving ripples in the surface.
 	vec2 p = wpos.xz;
 	float t = TIME;
 	float dx = cos(p.x * 2.1 + t * 1.3) * 0.5 + cos((p.x + p.y) * 1.3 - t * 0.9) * 0.4;
@@ -74,8 +94,12 @@ void fragment() {
 	vec3 n_world = normalize(vec3(dx * 0.08, 1.0, dz * 0.08));
 	NORMAL = normalize((VIEW_MATRIX * vec4(n_world, 0.0)).xyz);
 	float fres = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), 3.0);
-	ALBEDO = mix(vec3(0.05, 0.22, 0.36), vec3(0.35, 0.62, 0.82), fres);
-	ALPHA = mix(0.62, 0.92, fres);
+
+	// Shallow water is light and see-through. Deep water is dark and nearly opaque.
+	vec3 shallow = vec3(0.32, 0.65, 0.80);
+	vec3 deepc = vec3(0.02, 0.12, 0.26);
+	ALBEDO = mix(mix(shallow, deepc, deep), vec3(0.5, 0.75, 0.9), fres * 0.5);
+	ALPHA = clamp(mix(0.30, 0.96, deep) + fres * 0.15, 0.0, 0.97);
 	ROUGHNESS = 0.04;
 	SPECULAR = 0.9;
 }
@@ -101,6 +125,19 @@ var chunk_nodes := {}
 var ant: Ant
 var storage_pos := Vector3.ZERO
 var storage_ui: StorageUI
+var flash_rect: ColorRect
+var water_tint: ColorRect
+var last_health := 100.0
+var sky_mat: ProceduralSkyMaterial
+var env: Environment
+var sun: DirectionalLight3D
+var moon: DirectionalLight3D
+var day_time := 0.08       # 0 = sunrise, 0.25 = noon, 0.5 = sunset, 0.75 = midnight
+var day_count := 1
+var night_creatures := false   # true while night creatures (fireflies) are out
+var spray: CPUParticles3D
+var health_bar: ProgressBar
+var acid_bar: ProgressBar
 var pickup_sites := []   # each: {pos, kind}
 var queen: Placeable = null   # the colony's queen, once placed
 var hud: Label
@@ -154,6 +191,7 @@ func _ready() -> void:
 	add_child(ant)
 	ant.position = storage_pos + Vector3(-6, 15, 0)
 	ant.deposit_requested.connect(_on_deposit)
+	ant.water_surface = water_surface_at
 
 	crafting = Crafting.new()
 	crafting.ant = ant
@@ -161,13 +199,24 @@ func _ready() -> void:
 	storage_ui = StorageUI.new()
 	storage_ui.ant = ant
 	add_child(storage_ui)
+	setup_spray()
+	scatter_fireflies()
+	scatter_spiders()
+	ant.died.connect(func(): show_message("You were killed. Respawned at your queen." if is_instance_valid(queen) else "You were killed. Respawned at the start."))
 	crafting.crafted.connect(func(t: String): show_message("Crafted %s. It is in your hotbar." % Crafting.RECIPES[t]["label"]))
 
 # ---------- Per-frame updates ----------
 
 func _process(delta: float) -> void:
 	ant.controls_locked = crafting.is_open or storage_ui.is_open
+	update_daynight(delta)
+	water_tint.visible = camera_underwater()
+	if ant.health < last_health - 0.01:
+		flash_rect.color.a = 0.4   # flash red when hurt
+	last_health = ant.health
+	flash_rect.color.a = maxf(0.0, flash_rect.color.a - delta * 1.5)
 	handle_dig(delta)
+	handle_spray(delta)
 	process_remesh_queue()
 	handle_water(delta)
 	refresh_water(delta)
@@ -175,10 +224,12 @@ func _process(delta: float) -> void:
 	message_time -= delta
 	var inv := ant.inventory
 	var cap := Ant.CAPACITY
-	var text := "Carrying:  Sugar %d/%d   Pebbles %d/%d   Leaf fiber %d/%d\n" % [
-		inv["sugar"], cap, inv["pebble"], cap, inv["fiber"], cap]
-	text += "Stored:      Sugar %d   Pebbles %d   Leaf fiber %d   Soil %d   Water %d\n" % [
-		stored("sugar"), stored("pebble"), stored("fiber"), stored("soil"), stored("water")]
+	var hours := fposmod(6.0 + day_time * 24.0, 24.0)
+	var text := "Day %d   %02d:%02d\n" % [day_count, int(hours), int((hours - floorf(hours)) * 60.0)]
+	text += "Carrying:  Sugar %d/%d   Pebbles %d/%d   Leaf fiber %d/%d   Glow %d/%d   Silk %d/%d\n" % [
+		inv["sugar"], cap, inv["pebble"], cap, inv["fiber"], cap, inv["glow"], cap, inv["silk"], cap]
+	text += "Stored:      Sugar %d   Pebbles %d   Leaf fiber %d   Glow %d   Silk %d   Soil %d   Water %d\n" % [
+		stored("sugar"), stored("pebble"), stored("fiber"), stored("glow"), stored("silk"), stored("soil"), stored("water")]
 
 	if build_mode:
 		text += "\nBUILD MODE\n"
@@ -189,10 +240,12 @@ func _process(delta: float) -> void:
 		text += "[R] rotate   [Left click] place   [Right click] remove   [B] exit"
 	else:
 		var held := crafting.held_type()
+		if ant.swimming:
+			text += "Swimming: [W/S] swim where you look   [Space] up   [Ctrl] dive\n"
 		if held != "":
 			text += "Holding: %s\n[Left click] place   [Right click] pick up   [Same number] put away   [R] rotate" % Crafting.RECIPES[held]["label"]
 		else:
-			text += "[Walk over resources] collect   [E at a box or barrel] open it   [Hold click] dig   [Hold right click] smooth   [Hold F] drink   [Shift] sprint\n[C] craft   [1-9] hold an item   [B] build   [K] respawn"
+			text += "[Walk over resources] collect   [E at a box or barrel] open it   [Hold click] dig   [Hold right click] smooth   [Hold F] drink   [Hold G] acid spray   [Shift] sprint   [N] skip 3 hours\n[C] craft   [1-9] hold an item   [B] build   [K] respawn"
 
 	if not water_source.is_empty():
 		text += "\n[Hold F] drink water"
@@ -204,6 +257,10 @@ func _process(delta: float) -> void:
 	(soil_bar.get_child(0) as Label).text = "Soil  %d / %d" % [int(ant.soil), int(Ant.SOIL_CAPACITY)]
 	water_bar.value = ant.water
 	(water_bar.get_child(0) as Label).text = "Water  %d / %d" % [int(ant.water), int(Ant.WATER_CAPACITY)]
+	health_bar.value = ant.health
+	(health_bar.get_child(0) as Label).text = "Health  %d / %d" % [int(ant.health), int(Ant.MAX_HEALTH)]
+	acid_bar.value = ant.acid
+	(acid_bar.get_child(0) as Label).text = "Acid  %d / %d" % [int(ant.acid), int(Ant.ACID_MAX)]
 	energy_bar.value = ant.energy
 	var tired := " (resting)" if ant.exhausted else ""
 	(energy_bar.get_child(0) as Label).text = "Energy  %d / %d%s" % [int(ant.energy), int(Ant.ENERGY_MAX), tired]
@@ -302,6 +359,8 @@ func _unhandled_input(event: InputEvent) -> void:
 					crafting.select_slot(n)
 			KEY_R:
 				yaw += PI / 2.0
+			KEY_N:
+				day_time = fposmod(day_time + 0.125, 1.0)
 			KEY_K:
 				ant.respawn()
 				show_message("Respawned at your queen." if is_instance_valid(queen) else "Respawned at the start. Place a queen to set your spawn.")
@@ -397,28 +456,34 @@ func handle_dig(delta: float) -> void:
 	wake_pickups(point, clear_radius)
 	mark_water_dirty(point, clear_radius)
 
-# True if a dig of this radius at this point would touch ground that is locked
-# around water: everything under and around a surface pool, and the ground
-# below the waterline of an underground pocket.
+# Only a thin slab of ground is locked, so water and trees always have something under them.
+# Pools and pockets lock the layer under their water, and trees and boulders lock the ground
+# just under their base. Everything deeper, and everything beside them, is diggable.
+const POOL_LOCK_DEPTH := 3.0       # how far below a pool or pocket floor stays solid
+const OBSTACLE_LOCK_DEPTH := 5.0   # how far below a tree or boulder base stays solid
+
+# True if a dig of this radius at this point would cut into one of those locked slabs.
 func is_protected(point: Vector3, radius: float) -> bool:
+	var top := point.y + radius      # the highest and lowest points the dig reaches
+	var bottom := point.y - radius
+
 	for p in pools:
-		var reach := float(p["radius"]) * 1.5 + 1.0 + radius
+		var reach := float(p["radius"]) * 1.4 + radius
 		if Vector2(point.x - float(p["x"]), point.z - float(p["z"])).length() < reach \
-				and point.y < float(p["rim"]) + 2.0 + radius:
+				and top > float(p["floor"]) - POOL_LOCK_DEPTH and bottom < float(p["level0"]) + 0.5:
 			return true
-	for o in obstacles:
-		var op: Vector3 = o["pos"]
-		if Vector2(point.x - op.x, point.z - op.z).length() < float(o["radius"]) + 1.5 + radius \
-				and point.y < op.y + float(o["radius"]) + 2.0:
-			return true
+
 	for p in pockets:
 		var pos: Vector3 = p["pos"]
 		var r: Vector3 = p["radii"]
-		var q := Vector3(
-			(point.x - pos.x) / (r.x * 1.5 + radius),
-			(point.y - pos.y) / (r.y * 1.5 + radius),
-			(point.z - pos.z) / (r.z * 1.5 + radius))
-		if q.length() < 1.0 and point.y - radius < float(p["level"]):
+		var q := Vector2((point.x - pos.x) / (r.x * 1.3 + radius), (point.z - pos.z) / (r.z * 1.3 + radius))
+		if q.length() < 1.0 and top > float(p["floor"]) - POOL_LOCK_DEPTH and bottom < float(p["level"]):
+			return true
+
+	for o in obstacles:
+		var op: Vector3 = o["pos"]
+		if Vector2(point.x - op.x, point.z - op.z).length() < float(o["radius"]) + radius * 0.5 \
+				and top > op.y - OBSTACLE_LOCK_DEPTH and bottom < op.y + 2.0:
 			return true
 	return false
 
@@ -750,8 +815,8 @@ func generate_pools() -> void:
 		tries += 1
 		var x := rng.randf_range(-HALF + 10, HALF - 10)
 		var z := rng.randf_range(-HALF + 10, HALF - 10)
-		var radius := rng.randf_range(3.5, 6.0)
-		var depth := rng.randf_range(1.8, 2.6)
+		var radius := rng.randf_range(5.0, 8.0)
+		var depth := rng.randf_range(5.0, 7.5)   # deep enough to dive in
 		if Vector2(x, z).distance_to(STORAGE_XZ) < radius + 14.0:
 			continue
 		var clear := true
@@ -786,7 +851,7 @@ func create_pool_water() -> void:
 		var rim: float = p["rim"]
 		var depth: float = p["depth"]
 		p["floor"] = rim - depth                 # lowest point of the bowl
-		p["level0"] = rim - 0.45 * depth         # water line when the pool is full
+		p["level0"] = rim - 0.25 * depth         # water line when the pool is full
 		var bound := float(p["radius"]) * 1.5 + 2.0
 		p["bound"] = Vector2(bound, bound)
 		p["seed"] = Vector2(float(p["x"]), float(p["z"]))
@@ -807,7 +872,7 @@ func generate_pockets() -> void:
 			rng.randf_range(3.0, 6.5), rng.randf_range(2.0, 3.5), rng.randf_range(3.0, 6.5))
 		var h := ground_height(x, z)
 		var min_y := World.BEDROCK_Y + radii.y + 3.0
-		var max_y := h - radii.y - 6.0
+		var max_y := h - radii.y - POCKET_MIN_DEPTH   # only deep down
 		if max_y <= min_y:
 			continue
 		var y := rng.randf_range(min_y, max_y)
@@ -900,6 +965,7 @@ func rebuild_water(p: Dictionary) -> void:
 	var level := floor_y + (float(p["level0"]) - floor_y) * fill
 	if fill < 0.03 or level - floor_y < 0.5:
 		body.mesh = null
+		p["cells"] = {}
 		return
 
 	var bound: Vector2 = p["bound"]
@@ -936,20 +1002,60 @@ func rebuild_water(p: Dictionary) -> void:
 
 	if queue.is_empty():
 		body.mesh = null    # the floor was dug out, so the water has drained away
+		p["cells"] = {}
 		return
+
+	# Find the ground under every wet cell, so the water can be drawn as a solid body.
+	var floors := {}
+	var y0 := floori(level)
+	for c in queue:
+		var fl := floor_y
+		for k in range(0, support + 2):
+			var dd := world.get_density(c.x, y0 - k, c.y)
+			if dd > 0.0:
+				var d_up := world.get_density(c.x, y0 - k + 1, c.y)
+				var t := dd / (dd - d_up) if dd != d_up else 0.0
+				fl = float(y0 - k) + clampf(t, 0.0, 1.0)
+				break
+		floors[c] = minf(fl, level - 0.2)
+	p["cells"] = floors
+	p["level_now"] = level
 
 	var verts := PackedVector3Array()
 	var norms := PackedVector3Array()
 	var idx := PackedInt32Array()
 	for c in queue:
-		var b := verts.size()
+		# The top surface.
+		var b0 := verts.size()
 		verts.append(Vector3(c.x - 0.5, level, c.y - 0.5))
 		verts.append(Vector3(c.x + 0.5, level, c.y - 0.5))
 		verts.append(Vector3(c.x + 0.5, level, c.y + 0.5))
 		verts.append(Vector3(c.x - 0.5, level, c.y + 0.5))
 		for k in 4:
 			norms.append(Vector3.UP)
-		idx.append_array([b, b + 1, b + 2, b, b + 2, b + 3])
+		idx.append_array([b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3])
+
+		# A wall down to the ground wherever the water meets a solid bank. These show
+		# in any cutaway, so the pool reads as a body of water and not a thin sheet.
+		var f: float = floors[c]
+		for dir in steps:
+			var nb: Vector2i = c + dir
+			if floors.has(nb):
+				continue
+			if world.sample_density(Vector3(nb.x, level, nb.y)) <= 0.0:
+				continue
+			var mid := Vector2(c) + Vector2(dir) * 0.5
+			var perp := Vector2(dir.y, dir.x) * 0.5
+			var p0 := mid - perp
+			var p1 := mid + perp
+			var w0 := verts.size()
+			verts.append(Vector3(p0.x, f, p0.y))
+			verts.append(Vector3(p1.x, f, p1.y))
+			verts.append(Vector3(p1.x, level, p1.y))
+			verts.append(Vector3(p0.x, level, p0.y))
+			for k in 4:
+				norms.append(Vector3(dir.x, 0, dir.y))
+			idx.append_array([w0, w0 + 1, w0 + 2, w0, w0 + 2, w0 + 3])
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
@@ -958,6 +1064,32 @@ func rebuild_water(p: Dictionary) -> void:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	body.mesh = mesh
+
+# The water level at a position, if it is inside a pool or pocket. Otherwise a very low number.
+func water_surface_at(pos: Vector3) -> float:
+	var cell := Vector2i(roundi(pos.x), roundi(pos.z))
+	for group in [pools, pockets]:
+		for p in group:
+			var cells: Dictionary = p.get("cells", {})
+			if cells.is_empty() or not cells.has(cell):
+				continue
+			var level := float(p["level_now"])
+			if pos.y < level and pos.y > float(cells[cell]) - 1.0:
+				return level
+	return -INF
+
+# True when the camera is inside a body of water, so the view gets a blue tint.
+func camera_underwater() -> bool:
+	var pos := ant.camera.global_position
+	var cell := Vector2i(roundi(pos.x), roundi(pos.z))
+	for group in [pools, pockets]:
+		for p in group:
+			var cells: Dictionary = p.get("cells", {})
+			if cells.is_empty() or not cells.has(cell):
+				continue
+			if pos.y < float(p["level_now"]) and pos.y > float(cells[cell]):
+				return true
+	return false
 
 # Called after digging, so water near the dig is redrawn to match the new ground.
 func mark_water_dirty(point: Vector3, radius: float) -> void:
@@ -1067,6 +1199,153 @@ func setup_terrain_material() -> void:
 # The starting spot. There is no marker: your storage is the boxes you build.
 func create_storage() -> void:
 	storage_pos = Vector3(STORAGE_XZ.x, ground_height(STORAGE_XZ.x, STORAGE_XZ.y), STORAGE_XZ.y)
+
+# ---------- Day and night ----------
+
+# Moves the sun, recolors the sky, and sends fireflies out at dusk.
+func update_daynight(delta: float) -> void:
+	day_time += delta / DAY_LENGTH
+	if day_time >= 1.0:
+		day_time -= 1.0
+		day_count += 1
+	var phase := day_time * TAU
+	var h := sin(phase)                                  # 1 at noon, -1 at midnight
+	var day := smoothstep(-0.12, 0.3, h)                 # 0 = full night, 1 = full day
+	var warm := (1.0 - smoothstep(0.0, 0.4, absf(h))) * 0.9   # orange glow near sunrise and sunset
+
+	var top := Color(0.02, 0.03, 0.09).lerp(Color(0.30, 0.50, 0.85), day).lerp(Color(0.25, 0.3, 0.55), warm * 0.5)
+	var horizon := Color(0.06, 0.08, 0.16).lerp(Color(0.65, 0.78, 0.92), day).lerp(Color(0.95, 0.5, 0.25), warm)
+	sky_mat.sky_top_color = top
+	sky_mat.sky_horizon_color = horizon
+	sky_mat.ground_horizon_color = horizon
+	sky_mat.ground_bottom_color = Color(0.02, 0.03, 0.03).lerp(Color(0.3, 0.35, 0.3), day)
+	env.fog_light_color = horizon
+	env.ambient_light_energy = lerpf(0.18, 0.6, day)
+
+	sun.rotation_degrees = Vector3(-rad_to_deg(phase), -30.0, 0.0)
+	sun.light_energy = 1.3 * smoothstep(-0.02, 0.25, h)
+	sun.light_color = Color(1.0, 0.95, 0.85).lerp(Color(1.0, 0.6, 0.3), warm)
+	sun.shadow_enabled = h > 0.02
+	moon.rotation_degrees = Vector3(-rad_to_deg(phase) + 180.0, -30.0, 0.0)
+	moon.light_energy = 0.25 * smoothstep(0.0, 0.3, -h)
+
+	# Fireflies come out as the light fades, and go to sleep at dawn.
+	var night := day < 0.45
+	if night != night_creatures:
+		night_creatures = night
+		for c in get_tree().get_nodes_in_group("creatures"):
+			if (c as Creature).nocturnal:
+				(c as Creature).set_active(night)
+
+# ---------- Acid spray and creatures ----------
+
+func setup_spray() -> void:
+	spray = CPUParticles3D.new()
+	spray.emitting = false
+	spray.amount = 90
+	spray.lifetime = 0.45
+	spray.local_coords = false
+	spray.direction = Vector3(0, 0, -1)   # straight ahead of the node; we aim the node itself
+	spray.spread = 8.0
+	spray.initial_velocity_min = 13.0
+	spray.initial_velocity_max = 17.0
+	spray.gravity = Vector3(0, -3.0, 0)
+	var drop := SphereMesh.new()
+	drop.radius = 0.1
+	drop.height = 0.2
+	drop.radial_segments = 6
+	drop.rings = 3
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.7, 1.0, 0.25, 0.85)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	drop.material = mat
+	spray.mesh = drop
+	add_child(spray)
+
+# Hold G to spray acid in front of the camera. It hurts creatures in a narrow cone.
+func handle_spray(delta: float) -> void:
+	var want := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not ant.controls_locked \
+			and not build_mode and Input.is_key_pressed(KEY_G)
+	if ant.acid_locked and ant.acid >= 20.0:
+		ant.acid_locked = false
+	var spraying := want and ant.acid > 0.0 and not ant.acid_locked
+	spray.emitting = spraying
+
+	if not spraying:
+		ant.acid = minf(Ant.ACID_MAX, ant.acid + ACID_REGEN * delta)
+		return
+
+	ant.acid = maxf(0.0, ant.acid - ACID_DRAIN * delta)
+	if ant.acid <= 0.0:
+		ant.acid_locked = true
+		show_message("Out of acid.")
+
+	var cam := ant.camera
+	var aim := -cam.global_transform.basis.z
+	var origin := ant.global_position + ant.basis.y * 0.7
+	spray.global_transform = Transform3D(Basis.looking_at(aim, ant.basis.y), origin)
+
+	for c in get_tree().get_nodes_in_group("creatures"):
+		var to_c: Vector3 = (c as Node3D).global_position - origin
+		var d := to_c.length()
+		if not (c as Creature).active:
+			continue
+		if d < SPRAY_RANGE and d > 0.01 and to_c.normalized().dot(aim) > 0.88:
+			(c as Creature).take_damage(SPRAY_DPS * delta)
+
+func scatter_fireflies() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 808
+	for i in FIREFLIES:
+		var x := rng.randf_range(-HALF + 4, HALF - 4)
+		var z := rng.randf_range(-HALF + 4, HALF - 4)
+		spawn_firefly(Vector3(x, ground_height(x, z) + 3.0, z))
+
+func spawn_firefly(pos: Vector3) -> void:
+	var f := Firefly.new()
+	f.ant = ant
+	f.ground_at = ground_height
+	f.home = pos
+	f.died.connect(_on_creature_died)
+	add_child(f)
+	f.global_position = pos
+	f.set_active(night_creatures)
+
+func scatter_spiders() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 909
+	for i in SPIDERS:
+		var x := rng.randf_range(-HALF + 6, HALF - 6)
+		var z := rng.randf_range(-HALF + 6, HALF - 6)
+		if Vector2(x, z).distance_to(STORAGE_XZ) < 14.0 or near_pool(x, z, 2.0) or near_obstacle(x, z, 2.0):
+			continue
+		spawn_spider(Vector3(x, ground_height(x, z) + 0.5, z))
+
+func spawn_spider(pos: Vector3) -> void:
+	var sp := Spider.new()
+	sp.ant = ant
+	sp.ground_at = ground_height
+	sp.home = pos
+	sp.died.connect(_on_creature_died)
+	add_child(sp)
+	sp.global_position = pos
+	sp.set_active(night_creatures)
+
+# A creature died: drop its loot, and for fireflies, bring a new one back later.
+func _on_creature_died(c: Creature) -> void:
+	var kind := c.loot_kind()
+	if kind != "":
+		var p := Pickup.new()
+		p.kind = kind
+		p.amount = randi_range(1, 3)
+		add_child(p)
+		p.global_position = c.global_position
+	var home := c.home
+	if c is Firefly:
+		get_tree().create_timer(FIREFLY_RESPAWN_SECONDS).timeout.connect(spawn_firefly.bind(home))
+	elif c is Spider:
+		get_tree().create_timer(SPIDER_RESPAWN_SECONDS).timeout.connect(spawn_spider.bind(home))
 
 # ---------- Trees and boulders ----------
 # Trees are enormous at ant scale: towering trunks you can climb, with a canopy far overhead.
@@ -1197,7 +1476,7 @@ func add_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMate
 	for i in rng.randi_range(5, 7):
 		var leaf_mat := StandardMaterial3D.new()
 		var g := rng.randf_range(0.8, 1.2)
-		leaf_mat.albedo_color = Color(0.14 * g, 0.36 * g, 0.10 * g)
+		leaf_mat.albedo_color = Color(0.10 * g, 0.50 * g, 0.08 * g)
 		leaf_mat.roughness = 0.9
 		var sm := SphereMesh.new()
 		sm.radius = 1.0
@@ -1566,13 +1845,26 @@ func setup_hud() -> void:
 	box.anchor_bottom = 1.0
 	box.offset_left = 16.0
 	box.offset_right = 316.0
-	box.offset_top = -216.0
+	box.offset_top = -272.0
 	box.offset_bottom = -100.0   # sits above the hotbar
 	box.add_theme_constant_override("separation", 8)
 	layer.add_child(box)
 	soil_bar = make_bar(box, Color(0.55, 0.36, 0.18), Ant.SOIL_CAPACITY)
 	water_bar = make_bar(box, Color(0.25, 0.55, 0.9), Ant.WATER_CAPACITY)
 	energy_bar = make_bar(box, Color(0.95, 0.8, 0.2), Ant.ENERGY_MAX)
+	health_bar = make_bar(box, Color(0.85, 0.2, 0.2), Ant.MAX_HEALTH)
+	acid_bar = make_bar(box, Color(0.55, 0.85, 0.2), Ant.ACID_MAX)
+	flash_rect = ColorRect.new()
+	flash_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	flash_rect.color = Color(0.8, 0.05, 0.05, 0.0)
+	flash_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(flash_rect)
+	water_tint = ColorRect.new()
+	water_tint.set_anchors_preset(Control.PRESET_FULL_RECT)
+	water_tint.color = Color(0.04, 0.25, 0.4, 0.45)
+	water_tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	water_tint.visible = false
+	layer.add_child(water_tint)
 	add_child(layer)
 
 func make_bar(parent: Control, color: Color, max_v: float) -> ProgressBar:
@@ -1600,7 +1892,7 @@ func make_bar(parent: Control, color: Color, max_v: float) -> ProgressBar:
 	return bar
 
 func setup_environment() -> void:
-	var sky_mat := ProceduralSkyMaterial.new()
+	sky_mat = ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color = Color(0.30, 0.50, 0.85)
 	sky_mat.sky_horizon_color = Color(0.65, 0.78, 0.92)
 	sky_mat.ground_horizon_color = Color(0.65, 0.78, 0.92)
@@ -1609,7 +1901,7 @@ func setup_environment() -> void:
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 
-	var env := Environment.new()
+	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
@@ -1628,16 +1920,23 @@ func setup_environment() -> void:
 	env.glow_enabled = true
 	env.glow_intensity = 0.6
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 1.15
+	env.adjustment_saturation = 1.35
 
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
 	# A warm sun with shadows that reach far enough to cover the field.
-	var sun: DirectionalLight3D = $DirectionalLight3D
+	sun = $DirectionalLight3D
 	sun.rotation_degrees = Vector3(-50, -30, 0)
 	sun.light_color = Color(1.0, 0.95, 0.85)
 	sun.light_energy = 1.3
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 150.0
+
+	# A dim blue moon that shines opposite the sun.
+	moon = DirectionalLight3D.new()
+	moon.light_color = Color(0.6, 0.7, 1.0)
+	moon.light_energy = 0.0
+	moon.shadow_enabled = false
+	add_child(moon)

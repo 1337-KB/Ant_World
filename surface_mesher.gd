@@ -22,7 +22,7 @@ static func block_color(id: int) -> Color:
 	match id:
 		Blocks.STONE: return Color(0.48, 0.47, 0.45)
 		Blocks.DIRT: return Color(0.40, 0.27, 0.15)
-		Blocks.GRASS: return Color(0.30, 0.55, 0.18)
+		Blocks.GRASS: return Color(0.22, 0.68, 0.12)
 		Blocks.CLAY: return Color(0.62, 0.38, 0.25)
 		Blocks.SAND: return Color(0.80, 0.72, 0.48)
 		Blocks.MUD: return Color(0.17, 0.12, 0.09)

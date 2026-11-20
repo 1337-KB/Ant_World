@@ -2,6 +2,7 @@ class_name Ant
 extends CharacterBody3D
 
 signal deposit_requested
+signal died
 
 const SPEED := 6.0
 const JUMP_SPEED := 7.0
@@ -23,6 +24,12 @@ const SOIL_SLOW := 0.25      # slowdown at a full soil load
 const WATER_SLOW := 0.15     # slowdown at a full water load
 const LOAD_SLOWS_ANT := false # false: carrying things never slows you down
 const SHOW_LOAD := false       # false: no bulge on the ant's back when carrying resources
+const MAX_HEALTH := 100.0
+const WADE_SLOW := 0.6       # walking speed in water, as a fraction of normal
+const SWIM_SPEED := 3.6      # swimming speed
+const FLOAT_DEPTH := 0.35    # how far under the surface the body rests when you just float
+const ACID_MAX := 100.0
+const HEALTH_REGEN := 0.5    # health gained per second
 const SPRINT_MULT := 1.7     # sprint speed compared with walking
 const ENERGY_MAX := 100.0
 const SPRINT_DRAIN := 25.0   # energy used per second while sprinting (4 seconds from full)
@@ -38,11 +45,16 @@ var look_yaw := 0.0          # mouse turning waiting to be applied
 var look_pitch := 0.0        # mouse tilting waiting to be applied
 var key_turn := 0.0          # current A/D turning speed
 var spawn_point := Vector3(0, 70, 0)   # where you respawn (the queen, once placed)
+var health := MAX_HEALTH
+var water_surface: Callable   # (position) -> water level there, or a very low number if not in water. Set by main.
+var swimming := false
+var acid := ACID_MAX          # fuel for the acid spray
+var acid_locked := false      # true after running dry, until it refills a bit
 var energy := ENERGY_MAX      # sprint energy
 var exhausted := false       # true after running out, until energy recovers
 var sprinting := false
 var controls_locked := false   # true while a menu is open: no walking, jumping, or depositing
-var inventory := {"sugar": 0, "pebble": 0, "fiber": 0}
+var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0}
 var soil := 0.0              # filled by digging
 var water := 0.0             # filled by drinking at pools
 
@@ -209,6 +221,7 @@ func _input(event: InputEvent) -> void:
 		deposit_requested.emit()
 
 func _process(delta: float) -> void:
+	health = minf(MAX_HEALTH, health + HEALTH_REGEN * delta)
 	# Apply a fraction of the queued mouse movement each frame, so looking is soft.
 	var k := minf(1.0, MOUSE_SMOOTH * delta)
 	var step_yaw := look_yaw * k
@@ -249,10 +262,20 @@ func _physics_process(delta: float) -> void:
 
 	var speed: float = SPEED * (1.0 - load_slow())
 
+	# Water: wading slows you down, and once your body is under the surface you swim.
+	var surf := -INF
+	if water_surface.is_valid():
+		surf = water_surface.call(global_position)
+	var wet: bool = surf > -1.0e8
+	var depth: float = surf - (global_position.y + 0.4)    # how far under the surface the body's middle is
+	swimming = wet and depth > 0.0
+	if wet and not swimming:
+		speed *= WADE_SLOW
+
 	# Sprint: hold Shift while moving. Energy drains, and when it runs out you walk
 	# until it refills past RECOVER_AT.
 	sprinting = false
-	if not controls_locked and Input.is_key_pressed(KEY_SHIFT) and input.length() > 0.0 and not exhausted:
+	if not controls_locked and not swimming and Input.is_key_pressed(KEY_SHIFT) and input.length() > 0.0 and not exhausted:
 		sprinting = true
 		speed *= SPRINT_MULT
 		energy = maxf(0.0, energy - SPRINT_DRAIN * delta)
@@ -262,6 +285,10 @@ func _physics_process(delta: float) -> void:
 		energy = minf(ENERGY_MAX, energy + ENERGY_REGEN * delta)
 		if exhausted and energy >= RECOVER_AT:
 			exhausted = false
+
+	if swimming:
+		swim(delta, depth)
+		return
 
 	# 1. Find a surface to stick to. No surface means we're falling.
 	var target_up := Vector3.UP
@@ -364,7 +391,14 @@ func load_slow() -> float:
 	total += water / WATER_CAPACITY * WATER_SLOW
 	return total
 
+func take_damage(amount: float) -> void:
+	health -= amount
+	if health <= 0.0:
+		died.emit()
+		respawn()
+
 func respawn() -> void:
+	health = MAX_HEALTH
 	global_position = spawn_point
 	basis = Basis.IDENTITY
 	velocity = Vector3.ZERO
@@ -387,3 +421,32 @@ func set_carried(kind: String, value: float) -> void:
 		"soil": soil = value
 		"water": water = value
 		_: inventory[kind] = int(value)
+
+# Swimming: W and S go where the camera looks (look down to dive), Space rises, Ctrl sinks.
+# With no input you float gently up to the surface.
+func swim(delta: float, depth: float) -> void:
+	attached = false
+	rotate_up_toward(Vector3.UP, minf(1.0, 3.0 * delta))   # right yourself
+	up_direction = basis.y
+
+	var look := -camera.global_transform.basis.z
+	var move := Vector3.ZERO
+	var vertical := 0.0
+	if not controls_locked:
+		if Input.is_key_pressed(KEY_W): move += look
+		if Input.is_key_pressed(KEY_S): move -= look
+		if Input.is_key_pressed(KEY_SPACE): vertical += 1.0
+		if Input.is_key_pressed(KEY_CTRL): vertical -= 1.0
+
+	var target := Vector3.ZERO
+	if move.length() > 0.0:
+		target = move.normalized() * SWIM_SPEED
+	target.y += vertical * SWIM_SPEED * 0.7
+	if move.length() == 0.0 and vertical == 0.0:
+		target.y = clampf((depth - FLOAT_DEPTH) * 1.5, -1.5, 2.0)   # drift up to the surface
+
+	velocity = velocity.lerp(target, minf(1.0, 5.0 * delta))
+	move_and_slide()
+	collect_nearby()
+	if global_position.y < -20.0:
+		respawn()

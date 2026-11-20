@@ -16,7 +16,7 @@ const RECIPES := {
 		"cost": {"fiber": 20},
 		"size": Vector3(1.6, 1.2, 1.6),
 		"color": Color(0.55, 0.36, 0.18),
-		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "soil": 150},   # most one box holds of each
+		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "glow": 100, "silk": 100, "soil": 150},   # most one box holds of each
 	},
 	"barrel": {
 		"label": "Water barrel",
@@ -26,6 +26,13 @@ const RECIPES := {
 		"color": Color(0.45, 0.30, 0.16),
 		"caps": {"water": 300},
 	},
+	"lamp": {
+		"label": "Glow lamp",
+		"desc": "Glows softly. Place it in tunnels and chambers.",
+		"cost": {"glow": 3},
+		"size": Vector3(0.7, 1.0, 0.7),
+		"color": Color(0.85, 1.0, 0.3),
+	},
 	"queen": {
 		"label": "Queen",
 		"desc": "Your colony's heart. You respawn here. Only one at a time.",
@@ -34,7 +41,7 @@ const RECIPES := {
 		"color": Color(0.86, 0.76, 0.6),
 	},
 }
-const ORDER := ["box", "barrel", "queen"]
+const ORDER := ["box", "barrel", "lamp", "queen"]
 
 var ant: Ant
 var items := {}              # item type -> how many you own

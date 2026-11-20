@@ -6,6 +6,8 @@ const KINDS := {
 	"sugar":  {"label": "Sugar",      "color": Color(1.0, 0.85, 0.3),  "size": 0.25, "slow": 0.10},
 	"pebble": {"label": "Pebbles",    "color": Color(0.55, 0.55, 0.6), "size": 0.35, "slow": 0.30},
 	"fiber":  {"label": "Leaf fiber", "color": Color(0.35, 0.75, 0.3), "size": 0.30, "slow": 0.20},
+	"silk":   {"label": "Spider silk", "color": Color(0.92, 0.92, 0.96), "size": 0.25, "slow": 0.0},
+	"glow":   {"label": "Firefly glow", "color": Color(0.85, 1.0, 0.3), "size": 0.22, "slow": 0.0},
 }
 
 signal depleted   # emitted when the last of it is taken
@@ -66,6 +68,38 @@ func _ready() -> void:
 			var shape := SphereShape3D.new()
 			shape.radius = s
 			col.shape = shape
+		"silk":
+			# A loose white bundle of threads.
+			mat.roughness = 0.9
+			for i in 4:
+				var thread := MeshInstance3D.new()
+				var tm := SphereMesh.new()
+				tm.radius = s
+				tm.height = s * 2.0
+				thread.mesh = tm
+				thread.material_override = mat
+				thread.scale = Vector3(0.25, 0.25, 1.4)
+				thread.rotation = Vector3(randf(), randf(), randf()) * TAU
+				visual.add_child(thread)
+			var silk_shape := SphereShape3D.new()
+			silk_shape.radius = s
+			col.shape = silk_shape
+		"glow":
+			# A small glowing bead.
+			mat.roughness = 0.2
+			mat.emission_enabled = true
+			mat.emission = Color(0.6, 0.9, 0.1)
+			mat.emission_energy_multiplier = 2.0
+			var bead := MeshInstance3D.new()
+			var gm := SphereMesh.new()
+			gm.radius = s
+			gm.height = s * 2.0
+			bead.mesh = gm
+			bead.material_override = mat
+			visual.add_child(bead)
+			var gshape := SphereShape3D.new()
+			gshape.radius = s
+			col.shape = gshape
 		_:
 			# Leaf fiber: a few flat curled chips stacked together.
 			for i in 3:

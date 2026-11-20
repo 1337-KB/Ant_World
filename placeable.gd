@@ -52,6 +52,46 @@ func _ready() -> void:
 		tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		tag.position = Vector3(0, size.y * 0.5 + 0.9, 0)
 		add_child(tag)
+	elif type == "lamp":
+		# A small stand holding a glowing bead of firefly glow.
+		var base := MeshInstance3D.new()
+		var bm := CylinderMesh.new()
+		bm.top_radius = size.x * 0.32
+		bm.bottom_radius = size.x * 0.32
+		bm.height = size.y * 0.2
+		base.mesh = bm
+		base.material_override = dark
+		base.position.y = -size.y * 0.4
+		add_child(base)
+		var stem := MeshInstance3D.new()
+		var stm := CylinderMesh.new()
+		stm.top_radius = size.x * 0.07
+		stm.bottom_radius = size.x * 0.07
+		stm.height = size.y * 0.5
+		stem.mesh = stm
+		stem.material_override = dark
+		stem.position.y = -size.y * 0.15
+		add_child(stem)
+		var glow_mat := StandardMaterial3D.new()
+		glow_mat.albedo_color = Color(0.9, 1.0, 0.4)
+		glow_mat.emission_enabled = true
+		glow_mat.emission = Color(0.7, 1.0, 0.2)
+		glow_mat.emission_energy_multiplier = 2.5
+		var bead := MeshInstance3D.new()
+		var gm := SphereMesh.new()
+		gm.radius = size.x * 0.4
+		gm.height = size.x * 0.8
+		bead.mesh = gm
+		bead.material_override = glow_mat
+		bead.position.y = size.y * 0.25
+		add_child(bead)
+		var light := OmniLight3D.new()
+		light.light_color = Color(0.8, 1.0, 0.35)
+		light.light_energy = 1.8
+		light.omni_range = 13.0
+		light.shadow_enabled = true   # set true for shadows, but many lamps with shadows gets slow
+		light.position.y = size.y * 0.25
+		add_child(light)
 	elif type == "barrel":
 		var body := MeshInstance3D.new()
 		var cm := CylinderMesh.new()
