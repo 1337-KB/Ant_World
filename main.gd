@@ -138,6 +138,8 @@ var night_creatures := false   # true while night creatures (fireflies) are out
 var spray: CPUParticles3D
 var douse_fx: CPUParticles3D
 var fire_cd := 0.0
+var res_panel: PanelContainer
+var res_rows := {}   # kind -> {"carry": Label, "stored": Label}
 var show_help := false   # F1 toggles the full controls list
 var health_bar: ProgressBar
 var acid_bar: ProgressBar
@@ -232,10 +234,21 @@ func _process(delta: float) -> void:
 	var cap := Ant.CAPACITY
 	var hours := fposmod(6.0 + day_time * 24.0, 24.0)
 	var text := "Day %d   %02d:%02d\n" % [day_count, int(hours), int((hours - floorf(hours)) * 60.0)]
-	text += "Carrying:  Sugar %d/%d   Pebbles %d/%d   Leaf fiber %d/%d   Glow %d/%d   Silk %d/%d   Resin %d/%d\n" % [
-		inv["sugar"], cap, inv["pebble"], cap, inv["fiber"], cap, inv["glow"], cap, inv["silk"], cap, inv["resin"], cap]
-	text += "Stored:      Sugar %d   Pebbles %d   Leaf fiber %d   Glow %d   Silk %d   Resin %d   Soil %d   Water %d\n" % [
-		stored("sugar"), stored("pebble"), stored("fiber"), stored("glow"), stored("silk"), stored("resin"), stored("soil"), stored("water")]
+	for k in res_rows:
+		var have := 0
+		if k == "soil":
+			have = int(ant.soil)
+		elif k == "water":
+			have = int(ant.water)
+		else:
+			have = int(inv[k])
+		var limit := cap
+		if k == "soil":
+			limit = int(Ant.SOIL_CAPACITY)
+		elif k == "water":
+			limit = int(Ant.WATER_CAPACITY)
+		res_rows[k]["carry"].text = "%d/%d" % [have, limit]
+		res_rows[k]["stored"].text = str(stored(k))
 
 	if build_mode:
 		text += "\nBUILD MODE\n"
@@ -264,6 +277,7 @@ func _process(delta: float) -> void:
 		text += "\n" + message
 	hud.text = text
 	hud.visible = not (crafting.is_open or storage_ui.is_open)
+	res_panel.visible = hud.visible
 
 	soil_bar.value = ant.soil
 	(soil_bar.get_child(0) as Label).text = "Soil  %d / %d" % [int(ant.soil), int(Ant.SOIL_CAPACITY)]
@@ -2017,12 +2031,73 @@ func setup_hud() -> void:
 	hud.anchor_right = 1.0
 	hud.offset_left = 16.0
 	hud.offset_top = 12.0
-	hud.offset_right = -16.0
+	hud.offset_right = -300.0   # leaves room for the resource panel on the right
 	hud.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART   # long hint lines wrap instead of running off screen
 	hud.add_theme_font_size_override("font_size", 20)
 	hud.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	hud.add_theme_constant_override("outline_size", 6)   # dark outline so it reads on bright ground
 	layer.add_child(hud)
+
+	# Resource panel, top right: what you carry and what the colony has stored.
+	res_panel = PanelContainer.new()
+	res_panel.anchor_left = 1.0
+	res_panel.anchor_right = 1.0
+	res_panel.offset_left = -270.0
+	res_panel.offset_right = -12.0
+	res_panel.offset_top = 12.0
+	res_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.05, 0.05, 0.55)
+	sb.set_corner_radius_all(8)
+	sb.content_margin_left = 12
+	sb.content_margin_right = 12
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	res_panel.add_theme_stylebox_override("panel", sb)
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 3)
+	res_panel.add_child(grid)
+	for header in ["", "", "Carry", "Stored"]:
+		var hl := Label.new()
+		hl.text = header
+		hl.add_theme_font_size_override("font_size", 14)
+		hl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		hl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		grid.add_child(hl)
+	var rows := [
+		["sugar", "Sugar", Pickup.KINDS["sugar"]["color"]],
+		["pebble", "Pebbles", Pickup.KINDS["pebble"]["color"]],
+		["fiber", "Leaf fiber", Pickup.KINDS["fiber"]["color"]],
+		["glow", "Glow", Pickup.KINDS["glow"]["color"]],
+		["silk", "Silk", Pickup.KINDS["silk"]["color"]],
+		["resin", "Resin", Pickup.KINDS["resin"]["color"]],
+		["soil", "Soil", Color(0.55, 0.36, 0.18)],
+		["water", "Water", Color(0.25, 0.55, 0.9)],
+	]
+	for r in rows:
+		var swatch := ColorRect.new()
+		swatch.custom_minimum_size = Vector2(14, 14)
+		swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		swatch.color = r[2]
+		grid.add_child(swatch)
+		var name_l := Label.new()
+		name_l.text = r[1]
+		name_l.add_theme_font_size_override("font_size", 17)
+		name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(name_l)
+		var carry_l := Label.new()
+		carry_l.add_theme_font_size_override("font_size", 17)
+		carry_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		grid.add_child(carry_l)
+		var stored_l := Label.new()
+		stored_l.add_theme_font_size_override("font_size", 17)
+		stored_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		stored_l.add_theme_color_override("font_color", Color(0.8, 0.85, 1.0))
+		grid.add_child(stored_l)
+		res_rows[r[0]] = {"carry": carry_l, "stored": stored_l}
+	layer.add_child(res_panel)
 
 	# Soil and water bars in the bottom left corner.
 	var box := VBoxContainer.new()
