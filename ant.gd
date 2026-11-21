@@ -4,14 +4,15 @@ extends CharacterBody3D
 signal deposit_requested
 signal died
 
+const BODY_SCALE := 0.65     # overall ant size. Lower = smaller ant (1.0 was the old size)
 const SPEED := 6.0
 const JUMP_SPEED := 7.0
 const GRAVITY := 20.0
 const STICK_FORCE := 3.0     # constant push into the surface we're walking on
 const TURN_RATE := 4.0       # how fast "up" swings to a new surface
 const CAMERA_FOLLOW := 5.0   # how quickly the camera catches up (lower = floatier)
-const CAMERA_HEIGHT := 2.4   # how high the camera sits above the ant
-const CAMERA_DISTANCE := 6.5 # how far behind the ant it sits
+const CAMERA_HEIGHT := 2.4 * BODY_SCALE   # how high the camera sits above the ant
+const CAMERA_DISTANCE := 6.5 * BODY_SCALE # how far behind the ant it sits
 const SENSITIVITY := 0.0015  # mouse look speed
 const MOUSE_SMOOTH := 12.0   # how fast mouse movement is applied (lower = softer)
 const A_D_TURNS := true      # true: A and D steer the ant. false: they strafe sideways.
@@ -49,6 +50,8 @@ var look_pitch := 0.0        # mouse tilting waiting to be applied
 var key_turn := 0.0          # current A/D turning speed
 var spawn_point := Vector3(0, 70, 0)   # where you respawn (the queen, once placed)
 var health := MAX_HEALTH
+var terrain_speed := 1.0       # set by the biome: cold and mud slow the ant
+var sprint_cost_mult := 1.0    # set by the biome: heat drains sprint energy faster
 var has_queen := false   # set by main every frame
 var water_surface: Callable   # (position) -> water level there, or a very low number if not in water. Set by main.
 var swimming := false
@@ -73,9 +76,9 @@ func _ready() -> void:
 	# A sphere rotates cleanly around corners, unlike a long capsule.
 	var shape := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
-	sphere.radius = 0.4
+	sphere.radius = 0.4 * BODY_SCALE
 	shape.shape = sphere
-	shape.position = Vector3(0, 0.4, 0)
+	shape.position = Vector3(0, 0.4 * BODY_SCALE, 0)
 	add_child(shape)
 
 	build_model()
@@ -109,7 +112,8 @@ func _ready() -> void:
 
 func build_model() -> void:
 	model = Node3D.new()
-	model.position = Vector3(0, 0.4, 0)
+	model.position = Vector3(0, 0.4 * BODY_SCALE, 0)
+	model.scale = Vector3.ONE * BODY_SCALE
 	add_child(model)
 
 	var mat := StandardMaterial3D.new()
@@ -265,14 +269,14 @@ func _physics_process(delta: float) -> void:
 		if Input.is_key_pressed(KEY_D): input.x += 1.0
 	var dir := (basis * input).normalized()
 
-	var speed: float = SPEED * (1.0 - load_slow())
+	var speed: float = SPEED * (1.0 - load_slow()) * terrain_speed
 
 	# Water: wading slows you down, and once your body is under the surface you swim.
 	var surf := -INF
 	if water_surface.is_valid():
 		surf = water_surface.call(global_position)
 	var wet: bool = surf > -1.0e8
-	var depth: float = surf - (global_position.y + 0.4)    # how far under the surface the body's middle is
+	var depth: float = surf - (global_position.y + 0.4 * BODY_SCALE)    # how far under the surface the body's middle is
 	swimming = wet and depth > 0.0
 	if wet and not swimming:
 		speed *= WADE_SLOW
@@ -283,7 +287,7 @@ func _physics_process(delta: float) -> void:
 	if not controls_locked and not swimming and Input.is_key_pressed(KEY_SHIFT) and input.length() > 0.0 and not exhausted:
 		sprinting = true
 		speed *= SPRINT_MULT
-		energy = maxf(0.0, energy - SPRINT_DRAIN * delta)
+		energy = maxf(0.0, energy - SPRINT_DRAIN * sprint_cost_mult * delta)
 		if energy <= 0.0:
 			exhausted = true
 	else:
@@ -331,7 +335,7 @@ func _physics_process(delta: float) -> void:
 # Returns the normal of the surface we should stick to, or null.
 func find_surface(dir: Vector3) -> Variant:
 	var up := basis.y
-	var center := global_position + up * 0.4
+	var center := global_position + up * 0.4 * BODY_SCALE
 
 	# A: a wall straight ahead (inside corner). Climb onto it.
 	if dir.length() > 0.1:
@@ -374,7 +378,7 @@ func rotate_up_toward(target: Vector3, t: float) -> void:
 
 # Absorb any pickup within reach, up to the capacity for its type.
 func collect_nearby() -> void:
-	var center := global_position + basis.y * 0.4
+	var center := global_position + basis.y * 0.4 * BODY_SCALE
 	for node in get_tree().get_nodes_in_group("pickups"):
 		var p := node as Pickup
 		if p.amount <= 0 or p.global_position.distance_to(center) > PICKUP_RANGE:

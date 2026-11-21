@@ -1,14 +1,54 @@
 extends Node3D
 
-const HALF := 32
+const RIVER_WIDTH := 17          # the river and its banks take this much of the world's edge
+const RIVER_CENTER := 9.0        # distance of the river's middle from the world edge
+const RIVER_BED_Y := 32.0        # the riverbed, flat
+const RIVER_LEVEL := 37.5        # the water line, 5.5 deep. Constant all the way around.
+# Biomes. The order matches the arrays below.
+const FOREST := 0
+const DESERT := 1
+const HIGHLANDS := 2
+const TUNDRA := 3
+const SWAMP := 4
+const SAVANNA := 5
+const BIOME_NAMES := ["Forest", "Desert dunes", "Rocky highlands", "Frozen tundra", "Swamp", "Savanna"]
+const TREE_CHANCE := [1.0, 0.3, 0.3, 0.3, 0.6, 0.35]  # how likely a plant site is accepted, per biome (the plant differs by biome)
+const ROCK_CHANCE := [0.4, 0.5, 1.0, 0.6, 0.15, 0.3]   # same for boulders
+const FIREFLY_CHANCE := [0.5, 0.05, 0.1, 0.15, 1.0, 0.1]
+const BIOME_WALK_SPEED := [1.0, 1.0, 1.0, 0.8, 0.85, 1.0]   # walking speed in each biome (cold, mud slow you)
+const BIOME_SPRINT_COST := [1.0, 1.6, 1.0, 1.0, 1.0, 1.0]   # the heat drains sprint energy faster
+const BIOME_TINT := [Color(1, 1, 1), Color(1.1, 1.0, 0.82), Color(0.96, 0.96, 1.0), Color(0.9, 0.96, 1.08), Color(0.86, 0.96, 0.86), Color(1.14, 1.02, 0.76)]   # haze and sun colour
+const ROCK_TINT := [Color(1, 1, 1), Color(1.5, 1.2, 0.8), Color(0.7, 0.72, 0.82), Color(0.9, 1.0, 1.15), Color(0.8, 1.0, 0.8), Color(1.3, 0.95, 0.75)]
+const BIOME_RESOURCES := [                             # what the resource sites in each biome hold
+	["sugar", "pebble", "fiber", "resin"],
+	["pebble", "resin", "resin", "sugar"],
+	["pebble", "pebble", "pebble", "sugar"],
+	["sugar", "sugar", "pebble", "fiber"],
+	["fiber", "fiber", "resin", "sugar"],
+	["sugar", "sugar", "fiber", "pebble"],
+]
+const HALF := 7200   # the world is 2 * HALF units across (multiple of 16). 7200 is about 20 minutes of walking from the start to the river.
+const LAND := HALF - 24   # trees, pools, grass... stay inside this, clear of the river
+const BIOME_FREQ := 0.002   # lower = bigger biomes. 0.002 means a biome is roughly 500 units across.
 const HEIGHT_CHUNKS := 4      # the world is 16 * this many units tall
 const SURFACE_BASE := 44.0     # roughly how high the ground surface sits
 const POCKET_MIN_DEPTH := 22.0   # underground water starts at least this far below the surface
-const WATER_POCKETS := 7       # how many underground water pockets to try to place
-const POOLS := 4               # how many pools of water on the surface
+const POOL_CELL := 256         # the world is split into squares this big; each may hold one surface pool
+const POOL_CHANCE := 0.4       # chance that a square has a pool at all (lower = rarer)
+const POCKET_CELL := 64        # squares for underground water pockets
+const POCKET_TRIES := 6        # pocket attempts per square
 const SOIL_PER_VOLUME := 0.5   # soil gained per unit of ground dug out
 const DRINK_RATE := 30.0       # water gained per second while holding F
-const GRASS_CLUMPS := 450       # how many clumps to try to place
+# Per region (a 32 x 32 square): how much of each thing is placed. Lower = emptier world.
+const TREES_PER_REGION := 1.6
+const BOULDERS_PER_REGION := 4.0
+const GRASS_CLUMPS_PER_REGION := 160
+const PEBBLES_PER_REGION := 120
+const PICKUPS_PER_REGION := 6.0
+const FIREFLIES_PER_REGION := 0.8
+const SPIDERS_PER_REGION := 0.3
+const REGION_BUDGET_MS := 4.0   # time per frame spent building region content
+const EVICT_COLS := 9.0         # terrain farther than this many columns (16 units each) away is forgotten, unless you dug it
 const GRASS_MIN_HEIGHT := 0.8
 const GRASS_MAX_HEIGHT := 2.0
 const PEBBLE_SOLID_MIN := 0.5   # pebbles at least this big are solid; smaller ones you walk over
@@ -19,16 +59,18 @@ const DIG_INTERVAL := 0.14     # seconds between digs while holding
 const REACH := 30.0
 const STORAGE_XZ := Vector2(8, 8)
 const STORAGE_RADIUS := 3.0
-const FIREFLIES := 12                 # how many fireflies live in the field
 const FIREFLY_RESPAWN_SECONDS := 60.0
 const SPRAY_RANGE := 10.0              # how far the acid spray reaches
 const SPRAY_DPS := 25.0                # damage per second to what it hits
 const ACID_DRAIN := 25.0               # acid used per second of spraying
 const ACID_REGEN := 12.0               # acid regained per second when not spraying
+# World streaming: terrain is generated and drawn in columns of 16 x 16 units around the ant.
+const DATA_RADIUS := 5        # columns of terrain data kept generated around the ant
+const MESH_RADIUS := 4        # columns actually drawn, with collision
+const REGION_SIZE := 32.0     # grass, rocks and trees are grouped in squares this big, shown only near the ant
+const GEN_BUDGET_MS := 4.0    # time per frame spent generating terrain data
 const DAY_LENGTH := 600.0              # seconds for a full day and night (10 minutes)
-const SPIDERS := 4
 const SPIDER_RESPAWN_SECONDS := 120.0
-const PICKUP_SITES := 45               # how many places resources can appear
 const PICKUP_RESPAWN_SECONDS := 90.0   # how long a spot takes to grow its resource back
 const PIECE_ORDER := ["pebble_wall", "fiber_floor", "pillar"]
 
@@ -41,6 +83,7 @@ uniform float sway_strength = 0.35;
 uniform float sway_speed = 1.4;
 varying float tip;
 varying float rnd;
+varying vec2 kind;   // x: dry (golden savanna grass), y: dark (swamp)
 
 float hash21(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));
@@ -50,6 +93,7 @@ float hash21(vec2 p) {
 
 void vertex() {
 	tip = UV.y;
+	kind = COLOR.rg;
 	vec3 origin = MODEL_MATRIX[3].xyz;
 	rnd = hash21(origin.xz * 0.7);
 	float phase = TIME * sway_speed + origin.x * 0.6 + origin.z * 0.45;
@@ -59,7 +103,10 @@ void vertex() {
 }
 
 void fragment() {
-	vec3 base = mix(vec3(0.10, 0.55, 0.06), vec3(0.40, 0.80, 0.10), rnd);
+	vec3 green = mix(vec3(0.10, 0.55, 0.06), vec3(0.40, 0.80, 0.10), rnd);
+	vec3 dry = mix(vec3(0.62, 0.50, 0.16), vec3(0.88, 0.76, 0.36), rnd);
+	vec3 base = mix(green, dry, kind.x);
+	base = mix(base, base * vec3(0.5, 0.65, 0.55), kind.y);
 	ALBEDO = mix(base * 0.6, base * 1.35, tip);
 	ROUGHNESS = 0.85;
 }
@@ -110,18 +157,49 @@ var water_mat: ShaderMaterial
 var water_timer := 0.0
 var material := StandardMaterial3D.new()
 var noise := FastNoiseLite.new()
+var temp_noise := FastNoiseLite.new()    # biomes: hot and cold
+var moist_noise := FastNoiseLite.new()   # biomes: wet and dry
+var ridge_noise := FastNoiseLite.new()   # shapes the rocky highlands
+var current_biome := 0
+var biome_tint := Color(1, 1, 1)         # colours the haze and sunlight, blended smoothly between biomes
+var biome_tint_target := Color(1, 1, 1)
+var biome_timer := 0.0
 var patch_noise := FastNoiseLite.new()
 var pocket_noise := FastNoiseLite.new()
 var patch_noise2 := FastNoiseLite.new()
 var soil_noise := FastNoiseLite.new()
 var soil_noise2 := FastNoiseLite.new()
 var pockets := []   # water pockets: {pos, radii, rmin, level}
+var rivers := []    # the river around the world, in short pieces
 var pools := []     # surface pools: {x, z, radius, depth, rim, stock, ...}
 var water_source := {}   # the pool or pocket you are standing in, if any
 var soil_bar: ProgressBar
 var water_bar: ProgressBar
 var energy_bar: ProgressBar
 var chunk_nodes := {}
+var col_data := {}       # Vector2i column -> true once all its chunks are generated
+var col_meshed := {}     # Vector2i column -> true while it is drawn
+var data_wanted: Array = []
+var gen_job := {}
+var stream_timer := 0.0
+var region_nodes := {}   # Vector2i -> Node3D holding that square's grass, rocks and trees
+var pool_cells := {}      # Vector2i -> pools in that square (made the first time it is looked at)
+var pocket_cells := {}    # same for underground pockets
+var built_water: Array = []     # water bodies that have been drawn
+var unbuilt_water: Array = []   # water bodies waiting for the ground around them to exist
+var obstacles_by_region := {}   # region -> trees and boulders inside it
+var region_queue: Array = []
+var region_job := {}
+var region_done := {}
+var region_sites := {}    # region -> its resource site numbers, so they come back the same
+var edited_cols := {}     # columns you have dug or filled. Their terrain is never forgotten.
+var unbuilt_rivers: Array = []
+var bark_mat: StandardMaterial3D
+var grass_mat_shared: ShaderMaterial
+var blade_mesh_shared: ArrayMesh
+var pebble_mesh_shared: SphereMesh
+var pebble_mat_shared: StandardMaterial3D
+var grass_density_noise: FastNoiseLite
 var ant: Ant
 var storage_pos := Vector3.ZERO
 var storage_ui: StorageUI
@@ -181,22 +259,16 @@ func _ready() -> void:
 	setup_ghost()
 
 	generate_terrain()
-	for cpos in world.chunks:
-		build_chunk_node(cpos)
 
 	create_storage()
-	create_water()
-	create_pool_water()
-	scatter_landmarks()
-	scatter_grass()
-	scatter_pebbles()
-	scatter_pickups()
 
 	ant = Ant.new()
 	add_child(ant)
 	ant.position = storage_pos + Vector3(-6, 15, 0)
 	ant.deposit_requested.connect(_on_deposit)
 	ant.water_surface = water_surface_at
+
+	preload_world(Vector3(2, SURFACE_BASE, 8))   # build the ground around the start before the game opens
 
 	crafting = Crafting.new()
 	crafting.ant = ant
@@ -206,8 +278,6 @@ func _ready() -> void:
 	add_child(storage_ui)
 	setup_spray()
 	setup_douse()
-	scatter_fireflies()
-	scatter_spiders()
 	ant.died.connect(func(): show_message("You were killed. Respawned at your queen." if is_instance_valid(queen) else "You were killed. Respawned at the start."))
 	crafting.crafted.connect(func(t: String): show_message("Crafted %s. It is in your hotbar." % Crafting.RECIPES[t]["label"]))
 
@@ -225,6 +295,8 @@ func _process(delta: float) -> void:
 	handle_dig(delta)
 	handle_spray(delta)
 	handle_fire(delta)
+	stream_world(delta)
+	update_biome(delta)
 	process_remesh_queue()
 	handle_water(delta)
 	refresh_water(delta)
@@ -233,7 +305,7 @@ func _process(delta: float) -> void:
 	var inv := ant.inventory
 	var cap := Ant.CAPACITY
 	var hours := fposmod(6.0 + day_time * 24.0, 24.0)
-	var text := "Day %d   %02d:%02d\n" % [day_count, int(hours), int((hours - floorf(hours)) * 60.0)]
+	var text := "Day %d   %02d:%02d   %s\n" % [day_count, int(hours), int((hours - floorf(hours)) * 60.0), BIOME_NAMES[current_biome]]
 	for k in res_rows:
 		var have := 0
 		if k == "soil":
@@ -489,6 +561,7 @@ func handle_dig(delta: float) -> void:
 		dirty = world.smooth_sphere(point, SMOOTH_RADIUS)
 
 	dig_cooldown = DIG_INTERVAL
+	mark_edited(dirty)
 	queue_remesh(dirty, point)
 	clear_decor_near(point, clear_radius)
 	wake_pickups(point, clear_radius)
@@ -520,6 +593,7 @@ func fill_ground(point: Vector3, aim: Vector3) -> void:
 	ant.soil = maxf(0.0, ant.soil - world.last_added * SOIL_PER_VOLUME)
 	ant.water = maxf(0.0, ant.water - world.last_added * WATER_PER_FILL)
 	dig_cooldown = DIG_INTERVAL
+	mark_edited(dirty)
 	queue_remesh(dirty, center)
 	wake_pickups(center, FILL_RADIUS + 1.0)
 	mark_water_dirty(center, FILL_RADIUS + 1.0)
@@ -535,20 +609,23 @@ func is_protected(point: Vector3, radius: float) -> bool:
 	var top := point.y + radius      # the highest and lowest points the dig reaches
 	var bottom := point.y - radius
 
-	for p in pools:
+	for p in pools_at(point.x, point.z):
 		var reach := float(p["radius"]) * 1.4 + radius
 		if Vector2(point.x - float(p["x"]), point.z - float(p["z"])).length() < reach \
 				and top > float(p["floor"]) - POOL_LOCK_DEPTH and bottom < float(p["level0"]) + 0.5:
 			return true
 
-	for p in pockets:
+	if edge_dist(point.x, point.z) < RIVER_WIDTH + radius and top > RIVER_BED_Y - POOL_LOCK_DEPTH and bottom < RIVER_LEVEL + 0.5:
+		return true   # the riverbed stays, so the river keeps its water
+
+	for p in pockets_at_cell(Vector2i(floori(point.x / POCKET_CELL), floori(point.z / POCKET_CELL))):
 		var pos: Vector3 = p["pos"]
 		var r: Vector3 = p["radii"]
 		var q := Vector2((point.x - pos.x) / (r.x * 1.3 + radius), (point.z - pos.z) / (r.z * 1.3 + radius))
 		if q.length() < 1.0 and top > float(p["floor"]) - POOL_LOCK_DEPTH and bottom < float(p["level"]):
 			return true
 
-	for o in obstacles:
+	for o in obstacles_near(point.x, point.z):
 		var op: Vector3 = o["pos"]
 		if Vector2(point.x - op.x, point.z - op.z).length() < float(o["radius"]) + radius * 0.5 \
 				and top > op.y - OBSTACLE_LOCK_DEPTH and bottom < op.y + 2.0:
@@ -557,10 +634,13 @@ func is_protected(point: Vector3, radius: float) -> bool:
 
 # Hide grass and pebbles whose ground has been dug away.
 func clear_decor_near(point: Vector3, radius: float) -> void:
-	for set in decor_sets:
-		var mm: MultiMesh = set["mm"]
-		var pos: Array = set["pos"]
-		var hidden: Array = set["hidden"]
+	for decor in decor_sets:
+		var rect: Rect2 = decor["rect"]
+		if not rect.grow(radius + 1.0).has_point(Vector2(point.x, point.z)):
+			continue   # nothing of this square is near the dig
+		var mm: MultiMesh = decor["mm"]
+		var pos: Array = decor["pos"]
+		var hidden: Array = decor["hidden"]
 		for i in pos.size():
 			if hidden[i] == 1:
 				continue
@@ -570,8 +650,8 @@ func clear_decor_near(point: Vector3, radius: float) -> void:
 			if world.sample_density(p - Vector3(0, 0.3, 0)) < 0.0:
 				hidden[i] = 1
 				mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ZERO), p))
-				if set.has("bodies") and set["bodies"][i] != null:
-					set["bodies"][i].queue_free()   # the pebble is gone, so its solid body goes too
+				if decor.has("bodies") and decor["bodies"][i] != null:
+					decor["bodies"][i].queue_free()   # the pebble is gone, so its solid body goes too
 
 # ---------- Building ----------
 
@@ -757,8 +837,20 @@ func add_stored(kind: String, amount: int) -> void:
 func setup_noise() -> void:
 	noise.seed = 1234
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	noise.frequency = 0.04
-	noise.fractal_octaves = 3
+	noise.frequency = 0.012       # wide, gentle hills (one rise every ~80 units)
+	noise.fractal_octaves = 2
+	noise.fractal_gain = 0.25     # the second layer is faint, so no small bumps
+
+	# Biomes: big slow patterns, so each biome is a large region, found by exploring.
+	temp_noise.seed = 4001
+	temp_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	temp_noise.frequency = BIOME_FREQ
+	moist_noise.seed = 4002
+	moist_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	moist_noise.frequency = BIOME_FREQ
+	ridge_noise.seed = 4003
+	ridge_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	ridge_noise.frequency = 0.03
 
 	# Decides where the surface is grass, sand, or clay.
 	patch_noise.seed = 77
@@ -784,16 +876,70 @@ func setup_noise() -> void:
 	soil_noise2.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	soil_noise2.frequency = 0.15
 
-# The hills before pools are carved into them.
+# How much of each biome there is at a spot, as five numbers: desert, highlands, tundra,
+# swamp, savanna. Whatever is left over is forest. The start and the river zone are always
+# forest-like.
+func biome_weights(x: float, z: float) -> PackedFloat32Array:
+	var t := temp_noise.get_noise_2d(x, z)
+	var m := moist_noise.get_noise_2d(x, z)
+	var desert := smoothstep(0.12, 0.3, t) * smoothstep(0.08, -0.08, m)
+	var tundra := smoothstep(-0.12, -0.3, t)
+	var swamp := smoothstep(0.3, 0.48, m) * (1.0 - desert) * (1.0 - tundra)
+	var high := smoothstep(-0.18, -0.36, m) * (1.0 - desert) * (1.0 - tundra)
+	var savanna := smoothstep(0.04, 0.16, t) * smoothstep(-0.02, 0.1, m) * (1.0 - smoothstep(0.3, 0.42, m)) * (1.0 - desert)
+	var w := PackedFloat32Array([desert, high, tundra, swamp, savanna])
+	var total := 0.0
+	for v in w:
+		total += v
+	var norm := 1.0
+	if total > 1.0:
+		norm = 1.0 / total
+	norm *= smoothstep(26.0, 46.0, Vector2(x - 8.0, z - 8.0).length()) * smoothstep(4.0, 26.0, edge_dist(x, z))
+	for i in w.size():
+		w[i] *= norm
+	return w
+
+# Which biome a spot is in.
+func biome_at(x: float, z: float) -> int:
+	var w := biome_weights(x, z)
+	var best := 0.0
+	var which := -1
+	for i in w.size():
+		if w[i] > best:
+			best = w[i]
+			which = i
+	if best < 0.5:
+		return FOREST
+	return which + 1   # weights start at DESERT, which is 1
+
+# The hills before pools are carved into them, shaped further by the biome.
 func base_height(x: float, z: float) -> float:
 	var n := noise.get_noise_2d(x, z)
-	return clampf(SURFACE_BASE + n * absf(n) * 12.0, SURFACE_BASE - 6.0, SURFACE_BASE + 4.0)
+	var h := clampf(SURFACE_BASE + n * absf(n) * 12.0, SURFACE_BASE - 6.0, SURFACE_BASE + 4.0)
+	var w := biome_weights(x, z)
+	if w[0] + w[1] + w[2] + w[3] + w[4] <= 0.0:
+		return h
+	# Desert: rolling dunes.
+	var dune := sin(x * 0.11 + 1.7 * sin(z * 0.06)) * cos(z * 0.08 + 1.3 * sin(x * 0.05))
+	h += w[0] * (dune * 4.0 + 1.0)
+	# Highlands: raised ridges with steep sides.
+	var ridge := 1.0 - 2.0 * absf(ridge_noise.get_noise_2d(x, z))
+	h += w[1] * 9.0 * smoothstep(0.0, 0.25, ridge)
+	# Tundra: flatter ground. Swamp: low, flat and wet. Savanna: wide, gentle plains.
+	h = lerpf(h, SURFACE_BASE - 1.0, w[2] * 0.7)
+	h = lerpf(h, SURFACE_BASE - 4.5, w[3] * 0.85)
+	h = lerpf(h, SURFACE_BASE + 0.5, w[4] * 0.92)   # savanna: very flat, wide plains
+	return h
+
+# How far inside the world's edge a spot is. 0 at the very edge.
+func edge_dist(x: float, z: float) -> float:
+	return float(HALF) - maxf(absf(x), absf(z))
 
 # The real ground height. Around each pool the ground is flattened to a level rim,
 # then a shallow bowl is pressed into the middle of it.
 func ground_height(x: float, z: float) -> float:
 	var h := base_height(x, z)
-	for p in pools:
+	for p in pools_at(x, z):
 		var px: float = p["x"]
 		var pz: float = p["z"]
 		var r: float = p["radius"]
@@ -803,11 +949,23 @@ func ground_height(x: float, z: float) -> float:
 		var flat := 1.0 - smoothstep(r, r * 1.9, d)
 		h = lerpf(h, float(p["rim"]), flat)
 		h -= float(p["depth"]) * (1.0 - smoothstep(r * 0.3, r, d))
+
+	# The river runs all the way around the edge, with a high wall of ground on its far side.
+	var e := edge_dist(x, z)
+	if e < RIVER_WIDTH + 8.0:
+		var channel := 1.0 - smoothstep(5.0, 10.0, absf(e - RIVER_CENTER))
+		h = lerpf(h, RIVER_BED_Y, channel)
+		h += 14.0 * (1.0 - smoothstep(0.0, 4.0, e))
 	return h
 
 # What the very top layer of ground is made of at this spot.
 func surface_kind(x: float, z: float) -> int:
-	for p in pools:
+	var e := edge_dist(x, z)
+	if e < RIVER_WIDTH - 1.0:
+		return Blocks.MUD    # riverbed
+	if e < RIVER_WIDTH + 6.0:
+		return Blocks.SAND   # banks
+	for p in pools_at(x, z):
 		var px: float = p["x"]
 		var pz: float = p["z"]
 		var r: float = p["radius"]
@@ -816,6 +974,17 @@ func surface_kind(x: float, z: float) -> int:
 			return Blocks.MUD
 		if d < r * 1.5:
 			return Blocks.SAND
+	match biome_at(x, z):
+		DESERT:
+			return Blocks.GRAVEL if patch_noise2.get_noise_2d(x, z) > 0.5 else Blocks.SAND
+		HIGHLANDS:
+			return Blocks.GRAVEL if patch_noise2.get_noise_2d(x, z) > 0.1 else Blocks.STONE
+		TUNDRA:
+			return Blocks.GRAVEL if patch_noise2.get_noise_2d(x, z) > 0.55 else Blocks.SNOW
+		SWAMP:
+			return Blocks.GRASS if patch_noise.get_noise_2d(x, z) > 0.0 else Blocks.MUD
+		SAVANNA:
+			return Blocks.CLAY if patch_noise2.get_noise_2d(x, z) > 0.45 else Blocks.DRY_GRASS
 	var n := patch_noise.get_noise_2d(x, z)
 	if n > 0.32:
 		return Blocks.SAND
@@ -826,28 +995,41 @@ func surface_kind(x: float, z: float) -> int:
 	return Blocks.GRASS
 
 func generate_terrain() -> void:
-	generate_pools()
-	generate_pockets()
-	var cmax := ceili(float(HALF) / Chunk.SIZE)
-	for cx in range(-cmax, cmax):
-		for cz in range(-cmax, cmax):
-			for cy in HEIGHT_CHUNKS:
-				fill_chunk(Vector3i(cx, cy, cz))
+	generate_river()
+	# Pools and pockets are made per square as the ant gets near, and the terrain itself is
+	# generated the same way. See the streaming section.
+
+# Ground height and surface kind for every spot in one column, worked out once.
+func gen_column_cache(col: Vector2i) -> Dictionary:
+	var size := Chunk.SIZE
+	var hs := PackedFloat32Array()
+	var ks := PackedInt32Array()
+	hs.resize(size * size)
+	ks.resize(size * size)
+	for lx in size:
+		for lz in size:
+			var x := col.x * size + lx
+			var z := col.y * size + lz
+			hs[lx * size + lz] = ground_height(x, z)
+			ks[lx * size + lz] = surface_kind(x, z)
+	return {"h": hs, "k": ks}
 
 # Fills one chunk straight from the height function. Chunks that are all open
 # air are never created, so the empty sky costs nothing.
-func fill_chunk(cpos: Vector3i) -> void:
+func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 	var size := Chunk.SIZE
 	var origin := cpos * size
 	var near := pockets_near_chunk(cpos)
 	var chunk: Chunk = null
+	var hs: PackedFloat32Array = cache["h"]
+	var ks: PackedInt32Array = cache["k"]
 	for lx in size:
 		for lz in size:
 			var x := origin.x + lx
 			var z := origin.z + lz
-			var h := ground_height(x, z)
-			var kind := surface_kind(x, z)
-			var under := kind if kind != Blocks.GRASS else Blocks.DIRT
+			var h := hs[lx * size + lz]
+			var kind := ks[lx * size + lz]
+			var under := kind if (kind != Blocks.GRASS and kind != Blocks.SNOW and kind != Blocks.DRY_GRASS) else Blocks.DIRT
 			for ly in size:
 				var y := origin.y + ly
 				var depth := h - y
@@ -905,71 +1087,119 @@ func soil_at(x: float, y: float, z: float, depth: float, kind: int, under: int) 
 	return Blocks.STONE
 
 # ---------- Surface pools ----------
+# The world is split into big squares. Each square may hold one pool, decided from the square's
+# own number the first time anything looks there, so the same pool is always in the same place.
 
-# Picks a few pool sites, well apart from each other and from the storage.
-func generate_pools() -> void:
+func cell_rng(cell: Vector2i, salt: int) -> RandomNumberGenerator:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = 777
-	var tries := 0
-	while pools.size() < POOLS and tries < 300:
-		tries += 1
-		var x := rng.randf_range(-HALF + 10, HALF - 10)
-		var z := rng.randf_range(-HALF + 10, HALF - 10)
+	rng.seed = hash(Vector3i(cell.x, cell.y, salt))
+	return rng
+
+func pools_at(x: float, z: float) -> Array:
+	var cell := Vector2i(floori(x / POOL_CELL), floori(z / POOL_CELL))
+	if not pool_cells.has(cell):
+		gen_pool_cell(cell)
+	return pool_cells[cell]
+
+func gen_pool_cell(cell: Vector2i) -> void:
+	var list := []
+	pool_cells[cell] = list
+	var rng := cell_rng(cell, 777)
+	if rng.randf() > POOL_CHANCE:
+		return
+	var origin := Vector2(cell) * float(POOL_CELL)
+	for t in 8:
+		var x := origin.x + rng.randf_range(30.0, POOL_CELL - 30.0)   # always well inside its square
+		var z := origin.y + rng.randf_range(30.0, POOL_CELL - 30.0)
 		var radius := rng.randf_range(5.0, 8.0)
 		var depth := rng.randf_range(5.0, 7.5)   # deep enough to dive in
+		if edge_dist(x, z) < RIVER_WIDTH + 30.0:
+			continue
 		if Vector2(x, z).distance_to(STORAGE_XZ) < radius + 14.0:
 			continue
-		var clear := true
-		for other in pools:
-			var ox: float = other["x"]
-			var oz: float = other["z"]
-			if Vector2(x - ox, z - oz).length() < 22.0:
-				clear = false
-				break
-		if not clear:
-			continue
-		pools.append({
-			"x": x, "z": z, "radius": radius, "depth": depth,
-			"rim": base_height(x, z),
-			"stock": radius * radius * 10.0,
-			"stock_max": radius * radius * 10.0,
-		})
+		var wb := biome_weights(x, z)
+		if wb[1] > 0.05 or wb[0] > 0.3:
+			continue   # no pools on rocky ridges or deep in the desert
+		if wb[3] < 0.5 and wb[4] < 0.5 and rng.randf() > 0.3:
+			continue   # pools are likelier in the swamp and the savanna
+		if wb[4] >= 0.5:
+			radius = rng.randf_range(10.0, 14.0)   # a savanna waterhole: wide and shallow
+			depth = rng.randf_range(2.2, 3.0)
+		var rim := base_height(x, z)
+		var bound := radius * 1.5 + 2.0
+		var p := {
+			"kind": "pool", "x": x, "z": z, "radius": radius, "depth": depth, "rim": rim,
+			"stock": radius * radius * 10.0, "stock_max": radius * radius * 10.0,
+			"floor": rim - depth,                 # lowest point of the bowl
+			"level0": rim - 0.25 * depth,         # water line when the pool is full
+			"bound": Vector2(bound, bound), "seed": Vector2(x, z),
+			"built": false, "dirty": false,       # drawn once the terrain around it exists
+		}
+		list.append(p)
+		unbuilt_water.append(p)
+		return
 
-func near_pool(x: float, z: float, scale: float = 1.3) -> bool:
-	for p in pools:
+func near_pool(x: float, z: float, factor: float = 1.3) -> bool:
+	for p in pools_at(x, z):
 		var px: float = p["x"]
 		var pz: float = p["z"]
 		var r: float = p["radius"]
-		if Vector2(x - px, z - pz).length() < r * scale:
+		if Vector2(x - px, z - pz).length() < r * factor:
 			return true
 	return false
 
-# The water sits a little below the rim, filling the bowl. Like the underground
-# water, it is only a visual for now.
-func create_pool_water() -> void:
-	for p in pools:
-		var rim: float = p["rim"]
-		var depth: float = p["depth"]
-		p["floor"] = rim - depth                 # lowest point of the bowl
-		p["level0"] = rim - 0.25 * depth         # water line when the pool is full
-		var bound := float(p["radius"]) * 1.5 + 2.0
-		p["bound"] = Vector2(bound, bound)
-		p["seed"] = Vector2(float(p["x"]), float(p["z"]))
-		add_water_body(p)
+# ---------- The river ----------
+# A river runs around the whole world and is its boundary. It is built from short pieces,
+# each a body of water like a pool, so each one is drawn only when the ground near it is.
+
+func generate_river() -> void:
+	var seg := 25   # cells along the river per piece. Odd, so each piece has a middle cell.
+	var across := int(RIVER_WIDTH / 2.0)   # half-width of a piece, in cells
+	var c := int(RIVER_CENTER)
+	# North and south pieces run the full width. East and west skip the corners the others cover.
+	var sides := [
+		{"axis": "x", "lo": -HALF, "hi": HALF - 1, "pos": HALF - c},
+		{"axis": "x", "lo": -HALF, "hi": HALF - 1, "pos": -(HALF - c)},
+		{"axis": "z", "lo": -(HALF - RIVER_WIDTH) + 1, "hi": HALF - RIVER_WIDTH - 1, "pos": HALF - c},
+		{"axis": "z", "lo": -(HALF - RIVER_WIDTH) + 1, "hi": HALF - RIVER_WIDTH - 1, "pos": -(HALF - c)},
+	]
+	for side in sides:
+		var a: int = side["lo"]
+		while a <= int(side["hi"]):
+			var b: int = mini(a + seg - 1, int(side["hi"]))
+			var mid := int((a + b) / 2.0)
+			var half := int((b - a) / 2.0)
+			var seed_v := Vector2(mid, side["pos"]) if side["axis"] == "x" else Vector2(side["pos"], mid)
+			var bound := Vector2(half, across) if side["axis"] == "x" else Vector2(across, half)
+			rivers.append({
+				"seed": seed_v, "bound": bound,
+				"kind": "river", "floor": RIVER_BED_Y, "level0": RIVER_LEVEL,
+				"stock": 1.0e12, "stock_max": 1.0e12,   # a river never runs dry
+				"built": false, "dirty": false,
+			})
+			unbuilt_rivers.append(rivers[rivers.size() - 1])
+			a = b + 1
 
 # ---------- Water pockets ----------
 
-# Picks where the pockets go. They are sealed cavities underground that you find by digging.
-func generate_pockets() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 2024
-	var tries := 0
-	while pockets.size() < WATER_POCKETS and tries < 600:
-		tries += 1
-		var x := rng.randf_range(-HALF + 8, HALF - 8)
-		var z := rng.randf_range(-HALF + 8, HALF - 8)
+func pockets_at_cell(cell: Vector2i) -> Array:
+	if not pocket_cells.has(cell):
+		gen_pocket_cell(cell)
+	return pocket_cells[cell]
+
+# Pockets are sealed cavities underground that you find by digging. Each square makes its own.
+func gen_pocket_cell(cell: Vector2i) -> void:
+	var list := []
+	pocket_cells[cell] = list
+	var rng := cell_rng(cell, 2024)
+	var origin := Vector2(cell) * float(POCKET_CELL)
+	for t in POCKET_TRIES:
+		var x := origin.x + rng.randf_range(11.0, POCKET_CELL - 11.0)   # keeps each pocket inside its square
+		var z := origin.y + rng.randf_range(11.0, POCKET_CELL - 11.0)
 		var radii := Vector3(
 			rng.randf_range(3.0, 6.5), rng.randf_range(2.0, 3.5), rng.randf_range(3.0, 6.5))
+		if edge_dist(x, z) < HALF - LAND + 8:
+			continue
 		var h := ground_height(x, z)
 		var min_y := World.BEDROCK_Y + radii.y + 3.0
 		var max_y := h - radii.y - POCKET_MIN_DEPTH   # only deep down
@@ -977,33 +1207,34 @@ func generate_pockets() -> void:
 			continue
 		var y := rng.randf_range(min_y, max_y)
 		var pos := Vector3(x, y, z)
-
-		# Keep pockets apart from each other.
 		var clear := true
-		for other in pockets:
+		for other in list:
 			var other_pos: Vector3 = other["pos"]
 			if other_pos.distance_to(pos) < 12.0:
 				clear = false
 				break
 		if not clear:
 			continue
-
-		pockets.append({
-			"pos": pos,
-			"radii": radii,
+		var p := {
+			"kind": "pocket", "pos": pos, "radii": radii,
 			"rmin": minf(radii.x, minf(radii.y, radii.z)),
 			"level": y - radii.y * 0.2,   # water fills the lower part of the cavity
 			"stock": radii.x * radii.z * 4.0,
 			"stock_max": radii.x * radii.z * 4.0,
-		})
+			"floor": y - radii.y, "level0": y - radii.y * 0.2,
+			"bound": Vector2(radii.x + 2.0, radii.z + 2.0), "seed": Vector2(x, z),
+			"built": false, "dirty": false,
+		}
+		list.append(p)
+		unbuilt_water.append(p)
 
-# Only the pockets close enough to touch this chunk, so most chunks check none.
 func pockets_near_chunk(cpos: Vector3i) -> Array:
+	var cell := Vector2i(floori(float(cpos.x * Chunk.SIZE) / POCKET_CELL), floori(float(cpos.z * Chunk.SIZE) / POCKET_CELL))
 	var lo := Vector3(cpos * Chunk.SIZE)
 	var hi := lo + Vector3.ONE * Chunk.SIZE
 	var margin := 4.0
 	var result := []
-	for p in pockets:
+	for p in pockets_at_cell(cell):
 		var pos: Vector3 = p["pos"]
 		var r: Vector3 = p["radii"]
 		if pos.x + r.x + margin < lo.x or pos.x - r.x - margin > hi.x:
@@ -1014,19 +1245,6 @@ func pockets_near_chunk(cpos: Vector3i) -> Array:
 			continue
 		result.append(p)
 	return result
-
-# A translucent body of water filling the bottom of each cavity. It is only a visual for now:
-# you can walk through it, and it has no gathering yet.
-func create_water() -> void:
-	for p in pockets:
-		var pos: Vector3 = p["pos"]
-		var r: Vector3 = p["radii"]
-		p["floor"] = pos.y - r.y
-		p["level0"] = p["level"]
-		p["bound"] = Vector2(r.x + 2.0, r.z + 2.0)
-		p["seed"] = Vector2(pos.x, pos.z)
-		add_water_body(p)
-	print("WATER V2: built surfaces for ", pools.size(), " pools and ", pockets.size(), " pockets")
 
 # ---------- Water surfaces ----------
 # Water is not a solid shape. Each body is a flat surface at its water line, drawn only
@@ -1045,6 +1263,10 @@ func add_water_body(p: Dictionary) -> void:
 	add_child(body)
 	p["mesh"] = body
 	p["dirty"] = false
+	p["built"] = true
+	unbuilt_water.erase(p)
+	unbuilt_rivers.erase(p)
+	built_water.append(p)
 	rebuild_water(p)
 
 # Open air at the water line, with ground below to hold the water.
@@ -1165,43 +1387,45 @@ func rebuild_water(p: Dictionary) -> void:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	body.mesh = mesh
 
-# The water level at a position, if it is inside a pool or pocket. Otherwise a very low number.
 func water_surface_at(pos: Vector3) -> float:
 	var cell := Vector2i(roundi(pos.x), roundi(pos.z))
-	for group in [pools, pockets]:
-		for p in group:
-			var cells: Dictionary = p.get("cells", {})
-			if cells.is_empty() or not cells.has(cell):
-				continue
-			var level := float(p["level_now"])
-			if pos.y < level and pos.y > float(cells[cell]) - 1.0:
-				return level
+	for p in built_water:
+		var seed_v: Vector2 = p["seed"]
+		var bound: Vector2 = p["bound"]
+		if absf(pos.x - seed_v.x) > bound.x + 2.0 or absf(pos.z - seed_v.y) > bound.y + 2.0:
+			continue
+		var cells: Dictionary = p.get("cells", {})
+		if cells.is_empty() or not cells.has(cell):
+			continue
+		var level := float(p["level_now"])
+		if pos.y < level and pos.y > float(cells[cell]) - 1.0:
+			return level
 	return -INF
 
-# True when the camera is inside a body of water, so the view gets a blue tint.
 func camera_underwater() -> bool:
 	var pos := ant.camera.global_position
 	var cell := Vector2i(roundi(pos.x), roundi(pos.z))
-	for group in [pools, pockets]:
-		for p in group:
-			var cells: Dictionary = p.get("cells", {})
-			if cells.is_empty() or not cells.has(cell):
-				continue
-			if pos.y < float(p["level_now"]) and pos.y > float(cells[cell]):
-				return true
+	for p in built_water:
+		var seed_v: Vector2 = p["seed"]
+		var bound: Vector2 = p["bound"]
+		if absf(pos.x - seed_v.x) > bound.x + 2.0 or absf(pos.z - seed_v.y) > bound.y + 2.0:
+			continue
+		var cells: Dictionary = p.get("cells", {})
+		if cells.is_empty() or not cells.has(cell):
+			continue
+		if pos.y < float(p["level_now"]) and pos.y > float(cells[cell]):
+			return true
 	return false
 
-# Called after digging, so water near the dig is redrawn to match the new ground.
 func mark_water_dirty(point: Vector3, radius: float) -> void:
-	for group in [pools, pockets]:
-		for p in group:
-			var seed_v: Vector2 = p["seed"]
-			var bound: Vector2 = p["bound"]
-			if absf(point.x - seed_v.x) > bound.x + radius or absf(point.z - seed_v.y) > bound.y + radius:
-				continue
-			if point.y < float(p["floor"]) - radius - 3.0 or point.y > float(p["level0"]) + radius + 3.0:
-				continue
-			p["dirty"] = true
+	for p in built_water:
+		var seed_v: Vector2 = p["seed"]
+		var bound: Vector2 = p["bound"]
+		if absf(point.x - seed_v.x) > bound.x + radius or absf(point.z - seed_v.y) > bound.y + radius:
+			continue
+		if point.y < float(p["floor"]) - radius - 3.0 or point.y > float(p["level0"]) + radius + 3.0:
+			continue
+		p["dirty"] = true
 
 # Redraws flagged water a few times a second, not every frame.
 func refresh_water(delta: float) -> void:
@@ -1215,32 +1439,37 @@ func refresh_water(delta: float) -> void:
 	if not remesh_queue.is_empty():
 		return   # let the terrain finish rebuilding first
 	# One water body per tick, so several never rebuild in the same frame.
-	for group in [pools, pockets]:
-		for p in group:
-			if p["dirty"]:
-				rebuild_water(p)
-				return
+	for p in built_water:
+		if p["dirty"]:
+			rebuild_water(p)
+			return
 
 # ---------- Drinking ----------
 
-# The pool or underground pocket the ant is standing in, or an empty dictionary.
 func find_water_source() -> Dictionary:
 	var a := ant.global_position
-	for p in pools:
+	for p in built_water:
 		if float(p["stock"]) <= 0.0:
 			continue
-		var d := Vector2(a.x - float(p["x"]), a.z - float(p["z"])).length()
-		var rim: float = p["rim"]
-		if d < float(p["radius"]) * 0.7 + 1.5 and a.y < rim + 2.5 and a.y > rim - float(p["depth"]) - 2.0:
-			return p
-	for p in pockets:
-		if float(p["stock"]) <= 0.0:
+		var seed_v: Vector2 = p["seed"]
+		var bound: Vector2 = p["bound"]
+		if absf(a.x - seed_v.x) > bound.x + 3.0 or absf(a.z - seed_v.y) > bound.y + 3.0:
 			continue
-		var pos: Vector3 = p["pos"]
-		var r: Vector3 = p["radii"]
-		var q := Vector3((a.x - pos.x) / r.x, (a.y - pos.y) / r.y, (a.z - pos.z) / r.z)
-		if q.length() < 1.25 and a.y < float(p["level"]) + 1.5:
-			return p
+		match p["kind"]:
+			"pool":
+				var d := Vector2(a.x - float(p["x"]), a.z - float(p["z"])).length()
+				var rim: float = p["rim"]
+				if d < float(p["radius"]) * 0.7 + 1.5 and a.y < rim + 2.5 and a.y > rim - float(p["depth"]) - 2.0:
+					return p
+			"pocket":
+				var pos: Vector3 = p["pos"]
+				var r: Vector3 = p["radii"]
+				var q := Vector3((a.x - pos.x) / r.x, (a.y - pos.y) / r.y, (a.z - pos.z) / r.z)
+				if q.length() < 1.25 and a.y < float(p["level"]) + 1.5:
+					return p
+			"river":
+				if edge_dist(a.x, a.z) < RIVER_WIDTH and a.y < RIVER_LEVEL + 1.5 and a.y > RIVER_BED_Y - 1.0:
+					return p
 	return {}
 
 # Hold F at the water to fill your bar. The water gets lower as you drink.
@@ -1319,12 +1548,14 @@ func update_daynight(delta: float) -> void:
 	sky_mat.sky_horizon_color = horizon
 	sky_mat.ground_horizon_color = horizon
 	sky_mat.ground_bottom_color = Color(0.02, 0.03, 0.03).lerp(Color(0.3, 0.35, 0.3), day)
-	env.fog_light_color = horizon
-	env.ambient_light_energy = lerpf(0.18, 0.6, day)
+	biome_tint = biome_tint.lerp(biome_tint_target, minf(1.0, delta * 0.8))
+	env.fog_light_color = horizon * biome_tint
+	env.ambient_light_energy = lerpf(0.2, 0.75, day)
+	env.ambient_light_color = Color(0.4, 0.45, 0.65).lerp(Color(0.82, 0.82, 0.78), day)   # neutral by day, so shade stays grey, not blue
 
 	sun.rotation_degrees = Vector3(-rad_to_deg(phase), -30.0, 0.0)
 	sun.light_energy = 1.3 * smoothstep(-0.02, 0.25, h)
-	sun.light_color = Color(1.0, 0.95, 0.85).lerp(Color(1.0, 0.6, 0.3), warm)
+	sun.light_color = Color(1.0, 0.95, 0.85).lerp(Color(1.0, 0.6, 0.3), warm) * biome_tint
 	sun.shadow_enabled = h > 0.02
 	moon.rotation_degrees = Vector3(-rad_to_deg(phase) + 180.0, -30.0, 0.0)
 	moon.light_energy = 0.25 * smoothstep(0.0, 0.3, -h)
@@ -1494,44 +1725,36 @@ func spread_fire(from: Vector3) -> void:
 		return
 	spawn_fire((hit as Vector3) + Vector3(0, 0.15, 0))
 
-func scatter_fireflies() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 808
-	for i in FIREFLIES:
-		var x := rng.randf_range(-HALF + 4, HALF - 4)
-		var z := rng.randf_range(-HALF + 4, HALF - 4)
-		spawn_firefly(Vector3(x, ground_height(x, z) + 3.0, z))
-
 func spawn_firefly(pos: Vector3) -> void:
 	var f := Firefly.new()
 	f.ant = ant
 	f.ground_at = ground_height
 	f.home = pos
 	f.died.connect(_on_creature_died)
-	add_child(f)
+	region_node(region_key(pos.x, pos.z)).add_child(f)
 	f.global_position = pos
 	f.set_active(night_creatures)
-
-func scatter_spiders() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 909
-	for i in SPIDERS:
-		var x := rng.randf_range(-HALF + 6, HALF - 6)
-		var z := rng.randf_range(-HALF + 6, HALF - 6)
-		if Vector2(x, z).distance_to(STORAGE_XZ) < 14.0 or near_pool(x, z, 2.0) or near_obstacle(x, z, 2.0):
-			continue
-		spawn_spider(Vector3(x, ground_height(x, z) + 0.5, z))
 
 func spawn_spider(pos: Vector3) -> void:
 	var sp := Spider.new()
 	sp.ant = ant
 	sp.queen_getter = func(): return queen
 	sp.ground_at = ground_height
+	sp.is_loaded = ground_ready
 	sp.home = pos
 	sp.died.connect(_on_creature_died)
-	add_child(sp)
+	region_node(region_key(pos.x, pos.z)).add_child(sp)
 	sp.global_position = pos
 	sp.set_active(night_creatures)
+
+# Brings a creature back, unless its region has been forgotten (a new one appears with the region).
+func respawn_creature(home: Vector3, firefly: bool) -> void:
+	if not region_done.has(region_key(home.x, home.z)):
+		return
+	if firefly:
+		spawn_firefly(home)
+	else:
+		spawn_spider(home)
 
 # A creature died: drop its loot, and for fireflies, bring a new one back later.
 func _on_creature_died(c: Creature) -> void:
@@ -1544,23 +1767,39 @@ func _on_creature_died(c: Creature) -> void:
 		p.global_position = c.global_position
 	var home := c.home
 	if c is Firefly:
-		get_tree().create_timer(FIREFLY_RESPAWN_SECONDS).timeout.connect(spawn_firefly.bind(home))
+		get_tree().create_timer(FIREFLY_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, true))
 	elif c is Spider:
-		get_tree().create_timer(SPIDER_RESPAWN_SECONDS).timeout.connect(spawn_spider.bind(home))
+		get_tree().create_timer(SPIDER_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, false))
 
 # ---------- Trees and boulders ----------
 # Trees are enormous at ant scale: towering trunks you can climb, with a canopy far overhead.
 # Boulders are solid rock. The ground around both is too hard to dig, so nothing is left floating.
 
-const TREES := 7
-const BOULDERS := 14
+const FOG_DENSITY := 0.007   # lower = clearer view, but the edge of the loaded world shows more (0.016 was the old value)
 
-var obstacles := []   # each: {pos, radius}, used to keep other things clear and the ground undiggable
 var grain_albedo: NoiseTexture2D
 var grain_normal: NoiseTexture2D
 
+func add_obstacle(o: Dictionary) -> void:
+	var pos: Vector3 = o["pos"]
+	var key := region_key(pos.x, pos.z)
+	if not obstacles_by_region.has(key):
+		obstacles_by_region[key] = []
+	obstacles_by_region[key].append(o)
+
+# The trees and boulders in this region and the eight around it.
+func obstacles_near(x: float, z: float) -> Array:
+	var key := region_key(x, z)
+	var out := []
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var k := key + Vector2i(dx, dz)
+			if obstacles_by_region.has(k):
+				out.append_array(obstacles_by_region[k])
+	return out
+
 func near_obstacle(x: float, z: float, margin: float = 1.5) -> bool:
-	for o in obstacles:
+	for o in obstacles_near(x, z):
 		var op: Vector3 = o["pos"]
 		if Vector2(x - op.x, z - op.z).length() < float(o["radius"]) + margin:
 			return true
@@ -1601,51 +1840,213 @@ func make_grain_material(color: Color, uv_scale: Vector3, bump: float) -> Standa
 	m.uv1_scale = uv_scale
 	return m
 
-func scatter_landmarks() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 31337
+# (Trees and boulders are placed per region. See the region content section.)
 
-	# Trees, well spaced and away from pools and the start.
-	var bark := make_grain_material(Color(0.42, 0.29, 0.18), Vector3(0.7, 0.07, 0.7), 1.5)
-	var placed := 0
-	var tries := 0
-	while placed < TREES and tries < 400:
-		tries += 1
-		var x := rng.randf_range(-HALF + 8, HALF - 8)
-		var z := rng.randf_range(-HALF + 8, HALF - 8)
-		if near_pool(x, z, 2.8) or near_obstacle(x, z, 10.0):
-			continue
-		if Vector2(x, z).distance_to(STORAGE_XZ) < 10.0:
-			continue
-		add_tree(x, z, rng, bark)
-		placed += 1
+# What grows at a site depends on the biome: forest trees, willows in the swamp, flat-topped
+# acacias on the savanna, cacti in the desert, bare dead trees and pines in the cold and the hills.
+func add_plant(x: float, z: float, rng: RandomNumberGenerator, biome: int, bark: StandardMaterial3D) -> void:
+	match biome:
+		SWAMP:
+			add_willow(x, z, rng)
+		SAVANNA:
+			add_acacia(x, z, rng)
+		DESERT:
+			add_cactus(x, z, rng)
+		TUNDRA:
+			if rng.randf() < 0.5:
+				add_dead_tree(x, z, rng)
+			else:
+				add_pine(x, z, rng, Color(0.60, 0.76, 0.74))   # frosted
+		HIGHLANDS:
+			add_pine(x, z, rng, Color(0.08, 0.28, 0.14))
+		_:
+			add_round_tree(x, z, rng, bark)
 
-	# Boulders, some with smaller rocks leaning against them.
-	placed = 0
-	tries = 0
-	while placed < BOULDERS and tries < 600:
-		tries += 1
-		var x := rng.randf_range(-HALF + 3, HALF - 3)
-		var z := rng.randf_range(-HALF + 3, HALF - 3)
-		var r := 1.2 + pow(rng.randf(), 2.0) * 3.6
-		if near_pool(x, z, 1.8) or near_obstacle(x, z, r + 1.5):
-			continue
-		if Vector2(x, z).distance_to(STORAGE_XZ) < 6.0 + r:
-			continue
-		add_rock(x, z, r, rng)
-		placed += 1
-		if r > 2.5:
-			for k in 2:
-				var a := rng.randf_range(0.0, TAU)
-				var dist := r * rng.randf_range(1.1, 1.6)
-				var sx := x + cos(a) * dist
-				var sz := z + sin(a) * dist
-				var sr := r * rng.randf_range(0.3, 0.5)
-				if near_pool(sx, sz, 1.8) or near_obstacle(sx, sz, sr + 0.5):
-					continue
-				add_rock(sx, sz, sr, rng)
+# A static body for a plant, sunk slightly so it never floats.
+func new_plant_body(x: float, z: float) -> StaticBody3D:
+	var body := StaticBody3D.new()
+	body.collision_layer = 1
+	body.collision_mask = 0
+	region_node(region_key(x, z)).add_child(body)
+	body.global_position = Vector3(x, ground_height(x, z) - 1.0, z)
+	return body
 
-func add_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMaterial3D) -> void:
+func plant_mat(color: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.roughness = 0.9
+	return m
+
+func plant_part(body: Node3D, mesh: Mesh, color: Color, pos: Vector3, orient: Basis = Basis.IDENTITY) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = plant_mat(color)
+	mi.transform = Transform3D(orient, pos)
+	body.add_child(mi)
+	return mi
+
+func cylinder_mesh(top: float, bottom: float, height: float, segments: int = 10) -> CylinderMesh:
+	var cm := CylinderMesh.new()
+	cm.top_radius = top
+	cm.bottom_radius = bottom
+	cm.height = height
+	cm.radial_segments = segments
+	cm.rings = 1
+	return cm
+
+func sphere_mesh() -> SphereMesh:
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	sm.radial_segments = 12
+	sm.rings = 6
+	return sm
+
+func trunk_collision(body: Node3D, mesh: CylinderMesh, pos: Vector3) -> void:
+	var col := CollisionShape3D.new()
+	col.shape = mesh.create_convex_shape(true, true)
+	col.position = pos
+	body.add_child(col)
+
+# Desert: a saguaro-style cactus with two arms.
+func add_cactus(x: float, z: float, rng: RandomNumberGenerator) -> void:
+	var body := new_plant_body(x, z)
+	var h := rng.randf_range(12.0, 19.0)
+	var r := rng.randf_range(1.4, 1.9)
+	var green := Color(0.18, 0.48, 0.24)
+	var trunk := CapsuleMesh.new()
+	trunk.radius = r
+	trunk.height = h
+	trunk.radial_segments = 10
+	plant_part(body, trunk, green, Vector3(0, h * 0.5, 0))
+	var col := CollisionShape3D.new()
+	var shape := CapsuleShape3D.new()
+	shape.radius = r
+	shape.height = h
+	col.shape = shape
+	col.position = Vector3(0, h * 0.5, 0)
+	body.add_child(col)
+	var facing := rng.randf() * TAU
+	for side in [-1.0, 1.0]:
+		var arm_y := h * rng.randf_range(0.4, 0.6)
+		var reach := r * 2.6
+		var out := cylinder_mesh(r * 0.55, r * 0.55, reach, 8)
+		var arm_basis := Basis(Vector3.UP, facing) * Basis(Vector3.BACK, PI * 0.5)
+		plant_part(body, out, green, Basis(Vector3.UP, facing) * Vector3(side * reach * 0.5, arm_y, 0), arm_basis)
+		var up := CapsuleMesh.new()
+		up.radius = r * 0.55
+		up.height = h * rng.randf_range(0.3, 0.45)
+		up.radial_segments = 8
+		plant_part(body, up, green, Basis(Vector3.UP, facing) * Vector3(side * reach, arm_y + up.height * 0.5, 0))
+	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 2.2})
+
+# Savanna: an acacia with a thin, curving trunk and a wide, layered, flat-topped canopy.
+func add_acacia(x: float, z: float, rng: RandomNumberGenerator) -> void:
+	var body := new_plant_body(x, z)
+	var h := rng.randf_range(18.0, 27.0)
+	var r := rng.randf_range(1.0, 1.5)
+	var facing := rng.randf() * TAU
+	var lean := rng.randf_range(0.05, 0.2)
+	var seg := (h + 1.0) / 3.0
+	var pos := Vector3.ZERO
+	for k in 3:
+		var tb := Basis(Vector3.UP, facing) * Basis(Vector3.RIGHT, lean * float(k + 1) * (1.0 if k % 2 == 0 else -0.6))
+		var tm := cylinder_mesh(r * (1.15 - 0.3 * float(k + 1)), r * (1.15 - 0.3 * float(k)), seg, 10)
+		var mid := pos + tb * Vector3(0, seg * 0.5, 0)
+		plant_part(body, tm, Color(0.34, 0.25, 0.17), mid, tb)
+		var col := CollisionShape3D.new()
+		col.shape = tm.create_convex_shape(true, true)
+		col.transform = Transform3D(tb, mid)
+		body.add_child(col)
+		pos += tb * Vector3(0, seg, 0)
+	# Layered canopy: darker underneath, lighter on top.
+	for i in rng.randi_range(2, 3):
+		var w := rng.randf_range(9.0, 14.0)
+		var t := float(i) / 2.0
+		var leaf := Color(0.22, 0.34, 0.10).lerp(Color(0.38, 0.52, 0.14), t)
+		var mi := plant_part(body, sphere_mesh(), leaf,
+				pos + Vector3(rng.randf_range(-3.0, 3.0), 0.9 * float(i), rng.randf_range(-3.0, 3.0)))
+		mi.scale = Vector3(w, 1.0 + 0.2 * float(i), w)
+	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.4})
+	# Shrubs often grow in the tree's shade.
+	if rng.randf() < 0.35:
+		for i in rng.randi_range(1, 2):
+			var ang := rng.randf() * TAU
+			var d := rng.randf_range(4.0, 9.0)
+			add_shrub(x + cos(ang) * d, z + sin(ang) * d, rng)
+
+# A low, dark green bush made of a few overlapping lumps. Decoration only: you walk through it.
+func add_shrub(x: float, z: float, rng: RandomNumberGenerator) -> void:
+	if near_pool(x, z, 1.6) or near_obstacle(x, z, 1.5):
+		return
+	var root := Node3D.new()
+	region_node(region_key(x, z)).add_child(root)
+	root.global_position = Vector3(x, ground_height(x, z) - 0.3, z)
+	for i in rng.randi_range(2, 3):
+		var s := rng.randf_range(1.3, 2.3)
+		var g := rng.randf_range(0.85, 1.15)
+		var mi := plant_part(root, sphere_mesh(), Color(0.16 * g, 0.30 * g, 0.11 * g),
+				Vector3(rng.randf_range(-1.4, 1.4), s * 0.5, rng.randf_range(-1.4, 1.4)))
+		mi.scale = Vector3(s * 1.2, s * 0.9, s * 1.2)
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+# Swamp: a short, dark, drooping willow with hanging vines.
+func add_willow(x: float, z: float, rng: RandomNumberGenerator) -> void:
+	var body := new_plant_body(x, z)
+	var h := rng.randf_range(15.0, 22.0)
+	var r := rng.randf_range(2.0, 2.8)
+	var tm := cylinder_mesh(r * 0.7, r * 1.4, h + 1.0, 12)
+	plant_part(body, tm, Color(0.24, 0.19, 0.13), Vector3(0, (h + 1.0) * 0.5, 0))
+	trunk_collision(body, tm, Vector3(0, (h + 1.0) * 0.5, 0))
+	for i in rng.randi_range(3, 5):
+		var w := rng.randf_range(6.0, 9.0)
+		var mi := plant_part(body, sphere_mesh(), Color(0.10, 0.32, 0.14),
+				Vector3(rng.randf_range(-4.0, 4.0), h + rng.randf_range(-1.5, 2.0), rng.randf_range(-4.0, 4.0)))
+		mi.scale = Vector3(w, w * 0.6, w)
+	for i in 12:
+		var ang := rng.randf() * TAU
+		var d := rng.randf_range(3.0, 8.0)
+		var vlen := rng.randf_range(5.0, 10.0)
+		plant_part(body, cylinder_mesh(0.1, 0.16, vlen, 4), Color(0.20, 0.42, 0.20),
+				Vector3(cos(ang) * d, h - vlen * 0.5 + 1.0, sin(ang) * d))
+	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.4})
+
+# Tundra: a bare, dead tree with crooked branches and no leaves.
+func add_dead_tree(x: float, z: float, rng: RandomNumberGenerator) -> void:
+	var body := new_plant_body(x, z)
+	var h := rng.randf_range(16.0, 25.0)
+	var r := rng.randf_range(1.2, 1.8)
+	var bark := Color(0.38, 0.33, 0.30)
+	var tm := cylinder_mesh(r * 0.4, r * 1.2, h + 1.0, 8)
+	plant_part(body, tm, bark, Vector3(0, (h + 1.0) * 0.5, 0))
+	trunk_collision(body, tm, Vector3(0, (h + 1.0) * 0.5, 0))
+	for i in rng.randi_range(4, 6):
+		var blen := rng.randf_range(6.0, 10.0)
+		var attach := Vector3(0, h * rng.randf_range(0.5, 0.95), 0)
+		var tilt := rng.randf_range(0.8, 1.3)
+		var bb := Basis(Vector3.UP, rng.randf() * TAU) * Basis(Vector3.RIGHT, tilt)
+		plant_part(body, cylinder_mesh(0.12, 0.45, blen, 6), bark, attach + bb * Vector3(0, blen * 0.5, 0), bb)
+	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.3})
+
+# Highlands and tundra: a tall pine made of stacked cones.
+func add_pine(x: float, z: float, rng: RandomNumberGenerator, leaf: Color) -> void:
+	var body := new_plant_body(x, z)
+	var h := rng.randf_range(22.0, 32.0)
+	var r := rng.randf_range(1.2, 1.7)
+	var tm := cylinder_mesh(r * 0.5, r * 1.2, h * 0.7, 10)
+	plant_part(body, tm, Color(0.30, 0.20, 0.12), Vector3(0, h * 0.35, 0))
+	trunk_collision(body, tm, Vector3(0, h * 0.35, 0))
+	var layers := 4
+	for i in layers:
+		var t := float(i) / float(layers - 1)
+		var cr := lerpf(7.5, 3.0, t)
+		var ch := 9.0
+		var g := rng.randf_range(0.9, 1.1)
+		plant_part(body, cylinder_mesh(0.0, cr, ch, 12), Color(leaf.r * g, leaf.g * g, leaf.b * g),
+				Vector3(0, h * 0.3 + t * h * 0.6 + ch * 0.4, 0))
+	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.4})
+
+func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMaterial3D) -> void:
 	var r := rng.randf_range(2.4, 3.4)          # trunk radius
 	var h := rng.randf_range(26.0, 38.0)        # height above the ground
 	var base_y := ground_height(x, z)
@@ -1653,7 +2054,7 @@ func add_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMate
 	var body := StaticBody3D.new()
 	body.collision_layer = 1
 	body.collision_mask = 0
-	add_child(body)
+	region_node(region_key(x, z)).add_child(body)
 	body.global_position = Vector3(x, base_y - 2.0, z)   # sunk a little so it never floats
 
 	# The trunk flares wider at the foot and narrows toward the top.
@@ -1692,18 +2093,20 @@ func add_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMate
 		leaves.position = Vector3(rng.randf_range(-6.0, 6.0), h + 2.0 + rng.randf_range(-3.0, 4.0), rng.randf_range(-6.0, 6.0))
 		body.add_child(leaves)
 
-	obstacles.append({"pos": Vector3(x, base_y, z), "radius": r * 1.5})
+	add_obstacle({"pos": Vector3(x, base_y, z), "radius": r * 1.5})
 
-func add_rock(x: float, z: float, r: float, rng: RandomNumberGenerator) -> void:
+func add_rock(x: float, z: float, r: float, rng: RandomNumberGenerator, biome: int = 0) -> void:
 	var mesh := make_rock_mesh(rng, r)
 	var g := rng.randf_range(0.42, 0.62)
 	var tint := Color(g, g * rng.randf_range(0.93, 1.0), g * rng.randf_range(0.85, 0.97))
+	var bt: Color = ROCK_TINT[biome]
+	tint = Color(minf(tint.r * bt.r, 1.0), minf(tint.g * bt.g, 1.0), minf(tint.b * bt.b, 1.0))
 	var mat := make_grain_material(tint, Vector3(0.5, 0.5, 0.5), 2.0)
 
 	var body := StaticBody3D.new()
 	body.collision_layer = 1
 	body.collision_mask = 0
-	add_child(body)
+	region_node(region_key(x, z)).add_child(body)
 	body.global_position = Vector3(x, ground_height(x, z) + r * 0.1, z)
 	body.rotation = Vector3(rng.randf_range(-0.15, 0.15), rng.randf_range(0.0, TAU), rng.randf_range(-0.15, 0.15))
 
@@ -1715,13 +2118,13 @@ func add_rock(x: float, z: float, r: float, rng: RandomNumberGenerator) -> void:
 	col.shape = mesh.create_convex_shape(true, true)
 	body.add_child(col)
 
-	obstacles.append({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.1})
+	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.1})
 
 # A lumpy boulder: a sphere with its surface pushed in and out by noise, flat on the bottom.
 func make_rock_mesh(rng: RandomNumberGenerator, r: float) -> ArrayMesh:
-	var noise := FastNoiseLite.new()
-	noise.seed = rng.randi()
-	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	var rock_noise := FastNoiseLite.new()
+	rock_noise.seed = rng.randi()
+	rock_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	var stretch := Vector3(rng.randf_range(0.85, 1.3), rng.randf_range(0.7, 1.0), rng.randf_range(0.85, 1.3))
 	var rings := 10
 	var segs := 14
@@ -1732,7 +2135,7 @@ func make_rock_mesh(rng: RandomNumberGenerator, r: float) -> ArrayMesh:
 		for j in segs:
 			var theta := TAU * float(j) / segs
 			var dir := Vector3(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta))
-			var d := 1.0 + noise.get_noise_3d(dir.x * 1.6, dir.y * 1.6, dir.z * 1.6) * 0.4
+			var d := 1.0 + rock_noise.get_noise_3d(dir.x * 1.6, dir.y * 1.6, dir.z * 1.6) * 0.4
 			var p := dir * d * r * stretch
 			p.y = maxf(p.y, -r * 0.5)
 			verts.append(p)
@@ -1792,77 +2195,263 @@ func make_blade_mesh() -> ArrayMesh:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
-func scatter_grass() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 99
-	var xforms: Array[Transform3D] = []
-	var positions := []
+# Only if its region is still around. If not, the site comes back with the region.
+func respawn_pickup(i: int) -> void:
+	var sp: Vector3 = pickup_sites[i]["pos"]
+	if region_done.has(region_key(sp.x, sp.z)):
+		spawn_pickup(i)
 
-	# Grass grows in clumps, thick in some areas and thin or bare in others.
-	var dense := FastNoiseLite.new()
-	dense.seed = 555
-	dense.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	dense.frequency = 0.07
-	for c in GRASS_CLUMPS:
-		var cx := rng.randf_range(-HALF + 3, HALF - 3)
-		var cz := rng.randf_range(-HALF + 3, HALF - 3)
-		if surface_kind(cx, cz) != Blocks.GRASS:
+func spawn_pickup(i: int) -> void:
+	var site: Dictionary = pickup_sites[i]
+	var pos: Vector3 = site["pos"]
+	var p := Pickup.new()
+	p.kind = site["kind"]
+	p.amount = randi_range(4, 10)
+	p.home = pos
+	# Held still where it sits, so it never drops from the sky or slides about.
+	# It is released only if the ground under it gets dug away.
+	p.freeze = world.sample_density(pos - Vector3(0, 0.6, 0)) > 0.0
+	p.depleted.connect(func(): get_tree().create_timer(PICKUP_RESPAWN_SECONDS).timeout.connect(respawn_pickup.bind(i)))
+	region_node(region_key(pos.x, pos.z)).add_child(p)
+	p.global_position = pos
+
+# After a dig, let nearby resources fall into the new hole instead of hovering.
+func wake_pickups(point: Vector3, radius: float) -> void:
+	for p in get_tree().get_nodes_in_group("pickups"):
+		if (p as Pickup).global_position.distance_to(point) < radius + 2.0:
+			(p as Pickup).freeze = false
+
+# ---------- Region content ----------
+# Everything that decorates the ground (trees, boulders, grass, pebbles, resources, creatures)
+# is made one 32 x 32 region at a time, as the ground there appears. Each region is seeded from
+# its own position, so it always comes out the same. The work is cut into small steps and done
+# a few milliseconds per frame, so walking into new land never stutters.
+
+func inland(x: float, z: float) -> bool:
+	return edge_dist(x, z) >= float(HALF - LAND)
+
+func region_step(budget_ms: float) -> void:
+	var start := Time.get_ticks_usec()
+	while true:
+		if region_job.is_empty():
+			if region_queue.is_empty():
+				return
+			region_job = new_region_job(region_queue.pop_front())
+		var items: Array = region_job["items"]
+		if items.is_empty():
+			region_job = {}
+			continue
+		var item: Array = items.pop_front()
+		run_region_item(region_job, item)
+		if (Time.get_ticks_usec() - start) / 1000.0 > budget_ms:
+			return
+
+func new_region_job(key: Vector2i) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(key.x, key.y, 31337))
+	var items := []
+	for i in int(TREES_PER_REGION + rng.randf()):
+		items.append(["tree"])
+	for i in int(BOULDERS_PER_REGION + rng.randf()):
+		items.append(["boulder"])
+	for i in ceili(GRASS_CLUMPS_PER_REGION / 40.0):
+		items.append(["grass", 40])
+	items.append(["build_grass"])
+	for i in ceili(PEBBLES_PER_REGION / 60.0):
+		items.append(["pebbles", 60])
+	items.append(["build_pebbles"])
+	items.append(["pickups"])
+	items.append(["creatures"])
+	return {"key": key, "rng": rng, "items": items, "grass": {}, "pebbles": {}}
+
+func run_region_item(job: Dictionary, item: Array) -> void:
+	match item[0]:
+		"tree":
+			region_tree(job)
+		"boulder":
+			region_boulder(job)
+		"grass":
+			region_grass(job, item[1])
+		"build_grass":
+			build_grass(job)
+		"pebbles":
+			region_pebbles(job, item[1])
+		"build_pebbles":
+			build_pebbles(job)
+		"pickups":
+			region_pickups(job)
+		"creatures":
+			region_creatures(job)
+
+# A random spot inside the region, kept this far from its edges.
+func region_spot(job: Dictionary, margin: float) -> Vector2:
+	var rng: RandomNumberGenerator = job["rng"]
+	var rect := region_rect(job["key"])
+	return Vector2(
+		rect.position.x + rng.randf_range(margin, REGION_SIZE - margin),
+		rect.position.y + rng.randf_range(margin, REGION_SIZE - margin))
+
+func get_bark() -> StandardMaterial3D:
+	if bark_mat == null:
+		bark_mat = make_grain_material(Color(0.42, 0.29, 0.18), Vector3(0.7, 0.07, 0.7), 1.5)
+	return bark_mat
+
+# Trees are well spaced and keep away from pools and the start.
+func region_tree(job: Dictionary) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	var p := region_spot(job, 4.0)
+	var x := p.x
+	var z := p.y
+	if not inland(x, z):
+		return
+	if near_pool(x, z, 2.8) or near_obstacle(x, z, 20.0):
+		return
+	if Vector2(x, z).distance_to(STORAGE_XZ) < 14.0:
+		return
+	var biome := biome_at(x, z)
+	if rng.randf() > TREE_CHANCE[biome]:
+		return
+	add_plant(x, z, rng, biome, get_bark())
+
+# Boulders, some with smaller rocks leaning against them.
+func region_boulder(job: Dictionary) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	var p := region_spot(job, 3.0)
+	var x := p.x
+	var z := p.y
+	var r := 1.2 + pow(rng.randf(), 2.0) * 3.6
+	if not inland(x, z):
+		return
+	if near_pool(x, z, 1.8) or near_obstacle(x, z, r + 1.5):
+		return
+	if Vector2(x, z).distance_to(STORAGE_XZ) < 6.0 + r:
+		return
+	var biome := biome_at(x, z)
+	if rng.randf() > ROCK_CHANCE[biome]:
+		return
+	add_rock(x, z, r, rng, biome)
+	if r > 2.5:
+		for k in 2:
+			var a := rng.randf_range(0.0, TAU)
+			var dist := r * rng.randf_range(1.1, 1.6)
+			var sx := x + cos(a) * dist
+			var sz := z + sin(a) * dist
+			var sr := r * rng.randf_range(0.3, 0.5)
+			if near_pool(sx, sz, 1.8) or near_obstacle(sx, sz, sr + 0.5):
+				continue
+			add_rock(sx, sz, sr, rng, biome_at(sx, sz))
+
+# Grass grows in clumps, thick in some areas and thin or bare in others.
+func region_grass(job: Dictionary, count: int) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	var buckets: Dictionary = job["grass"]
+	if grass_density_noise == null:
+		grass_density_noise = FastNoiseLite.new()
+		grass_density_noise.seed = 555
+		grass_density_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+		grass_density_noise.frequency = 0.07
+	for c in count:
+		var sp := region_spot(job, 0.0)
+		var cx := sp.x
+		var cz := sp.y
+		if not inland(cx, cz):
+			continue
+		var kind0 := surface_kind(cx, cz)
+		if kind0 != Blocks.GRASS and kind0 != Blocks.DRY_GRASS:
 			continue
 		if near_obstacle(cx, cz, 2.5):
 			continue
-		var d := dense.get_noise_2d(cx, cz)
+		var d := grass_density_noise.get_noise_2d(cx, cz)
 		if d < -0.45:
 			continue   # a bare patch
 		var blades := roundi(lerpf(2.0, 10.0, smoothstep(-0.2, 0.5, d)))
+		if kind0 == Blocks.DRY_GRASS:
+			blades = mini(roundi(blades * 1.8), 14)   # savanna grass: thicker than normal, but capped for frame rate
 		if Vector2(cx - storage_pos.x, cz - storage_pos.z).length() < STORAGE_RADIUS + 1.0:
 			continue
 		for b in blades:
 			var x := cx + rng.randf_range(-1.1, 1.1)
 			var z := cz + rng.randf_range(-1.1, 1.1)
-			if surface_kind(x, z) != Blocks.GRASS:
+			var kind1 := surface_kind(x, z)
+			if kind1 != Blocks.GRASS and kind1 != Blocks.DRY_GRASS:
 				continue
 			var base := Vector3(x, ground_height(x, z) - 0.1, z)
 			var height := rng.randf_range(GRASS_MIN_HEIGHT, GRASS_MAX_HEIGHT)
+			var is_dry := kind1 == Blocks.DRY_GRASS
+			if is_dry:
+				height *= 1.7   # tall savanna grass
+			var tint := Color(1.0 if is_dry else 0.0, 1.0 if biome_at(x, z) == SWAMP else 0.0, 0.0)
 			var lean := Vector3(
 				rng.randf_range(-0.15, 0.15), rng.randf_range(0.0, TAU), rng.randf_range(-0.15, 0.15))
 			var bs := Basis.from_euler(lean) * Basis().scaled(Vector3(1.0, height, 1.0))
-			xforms.append(Transform3D(bs, base))
-			positions.append(base)
+			var key := region_key(x, z)
+			if not buckets.has(key):
+				buckets[key] = {"xf": [], "pos": [], "tint": []}
+			buckets[key]["xf"].append(Transform3D(bs, base))
+			buckets[key]["pos"].append(base)
+			buckets[key]["tint"].append(tint)
 
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = make_blade_mesh()
-	mm.instance_count = xforms.size()
-	for i in xforms.size():
-		mm.set_instance_transform(i, xforms[i])
+func build_grass(job: Dictionary) -> void:
+	var buckets: Dictionary = job["grass"]
+	if grass_mat_shared == null:
+		var shader := Shader.new()
+		shader.code = GRASS_SHADER
+		grass_mat_shared = ShaderMaterial.new()
+		grass_mat_shared.shader = shader
+		blade_mesh_shared = make_blade_mesh()
+	for key in buckets:
+		var xforms: Array = buckets[key]["xf"]
+		var positions: Array = buckets[key]["pos"]
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.mesh = blade_mesh_shared
+		mm.instance_count = xforms.size()
+		for i in xforms.size():
+			mm.set_instance_transform(i, xforms[i])
+			mm.set_instance_color(i, buckets[key]["tint"][i])
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = grass_mat_shared
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		region_node(key).add_child(mmi)
+		var hidden := []
+		hidden.resize(positions.size())
+		hidden.fill(0)
+		decor_sets.append({"mm": mm, "pos": positions, "hidden": hidden, "rect": region_rect(key)})
+		recheck_dug_decor(decor_sets[decor_sets.size() - 1])
 
-	var shader := Shader.new()
-	shader.code = GRASS_SHADER
-	var grass_mat := ShaderMaterial.new()
-	grass_mat.shader = shader
+# Scenery rebuilt over ground you dug earlier must not float in the air.
+func recheck_dug_decor(decor: Dictionary) -> void:
+	var rect: Rect2 = decor["rect"]
+	var c0 := col_of(Vector3(rect.position.x, 0, rect.position.y))
+	var dug := false
+	for dx in 2:
+		for dz in 2:
+			if edited_cols.has(c0 + Vector2i(dx, dz)):
+				dug = true
+	if not dug:
+		return
+	var mm: MultiMesh = decor["mm"]
+	var pos: Array = decor["pos"]
+	var hidden: Array = decor["hidden"]
+	for i in pos.size():
+		var p: Vector3 = pos[i]
+		if world.sample_density(p - Vector3(0, 0.3, 0)) < 0.0:
+			hidden[i] = 1
+			mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ZERO), p))
+			if decor.has("bodies") and decor["bodies"][i] != null:
+				decor["bodies"][i].queue_free()
 
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	mmi.material_override = grass_mat
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(mmi)
-
-	var hidden := []
-	hidden.resize(positions.size())
-	hidden.fill(0)
-	decor_sets.append({"mm": mm, "pos": positions, "hidden": hidden})
-
-func scatter_pebbles() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 123
-	var xforms: Array[Transform3D] = []
-	var tints: Array[Color] = []
-	var positions := []
-	var bodies := []
-
-	for i in 350:
-		var x := rng.randf_range(-HALF + 2, HALF - 2)
-		var z := rng.randf_range(-HALF + 2, HALF - 2)
+func region_pebbles(job: Dictionary, count: int) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	var buckets: Dictionary = job["pebbles"]
+	for i in count:
+		var sp := region_spot(job, 0.0)
+		var x := sp.x
+		var z := sp.y
+		if not inland(x, z):
+			continue
 		if Vector2(x - storage_pos.x, z - storage_pos.z).length() < STORAGE_RADIUS + 1.0:
 			continue
 		if near_pool(x, z) or near_obstacle(x, z, 1.0):
@@ -1877,9 +2466,13 @@ func scatter_pebbles() -> void:
 		var base := Vector3(x, ground_height(x, z), z)
 		var pos := base - Vector3(0, size * 0.12, 0)
 		var g := rng.randf_range(0.35, 0.6)
-		xforms.append(Transform3D(bs, pos))
-		tints.append(Color(g, g * rng.randf_range(0.92, 1.0), g * rng.randf_range(0.8, 0.95)))
-		positions.append(pos)
+		var key := region_key(x, z)
+		if not buckets.has(key):
+			buckets[key] = {"xf": [], "tint": [], "pos": [], "bodies": []}
+		var b: Dictionary = buckets[key]
+		b["xf"].append(Transform3D(bs, pos))
+		b["tint"].append(Color(g, g * rng.randf_range(0.92, 1.0), g * rng.randf_range(0.8, 0.95)))
+		b["pos"].append(pos)
 
 		# Bigger pebbles are solid, so the ant can't walk through them.
 		var body: StaticBody3D = null
@@ -1890,80 +2483,371 @@ func scatter_pebbles() -> void:
 			ss.radius = size * 0.5 * 0.8
 			cs.shape = ss
 			body.add_child(cs)
-			add_child(body)
+			region_node(key).add_child(body)
 			body.global_position = pos
-		bodies.append(body)
+		b["bodies"].append(body)
 
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.5
-	sphere.height = 1.0
-	sphere.radial_segments = 8
-	sphere.rings = 5
+func build_pebbles(job: Dictionary) -> void:
+	var buckets: Dictionary = job["pebbles"]
+	if pebble_mesh_shared == null:
+		pebble_mesh_shared = SphereMesh.new()
+		pebble_mesh_shared.radius = 0.5
+		pebble_mesh_shared.height = 1.0
+		pebble_mesh_shared.radial_segments = 8
+		pebble_mesh_shared.rings = 5
+		pebble_mat_shared = StandardMaterial3D.new()
+		pebble_mat_shared.vertex_color_use_as_albedo = true
+		pebble_mat_shared.roughness = 1.0
+	for key in buckets:
+		var b: Dictionary = buckets[key]
+		var xforms: Array = b["xf"]
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.mesh = pebble_mesh_shared
+		mm.instance_count = xforms.size()
+		for i in xforms.size():
+			mm.set_instance_transform(i, xforms[i])
+			mm.set_instance_color(i, b["tint"][i])
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = pebble_mat_shared
+		region_node(key).add_child(mmi)
+		var hidden := []
+		hidden.resize(xforms.size())
+		hidden.fill(0)
+		decor_sets.append({"mm": mm, "pos": b["pos"], "hidden": hidden, "bodies": b["bodies"], "rect": region_rect(key)})
+		recheck_dug_decor(decor_sets[decor_sets.size() - 1])
 
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = true
-	mm.mesh = sphere
-	mm.instance_count = xforms.size()
-	for i in xforms.size():
-		mm.set_instance_transform(i, xforms[i])
-		mm.set_instance_color(i, tints[i])
-
-	var pebble_mat := StandardMaterial3D.new()
-	pebble_mat.vertex_color_use_as_albedo = true
-	pebble_mat.roughness = 1.0
-
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	mmi.material_override = pebble_mat
-	add_child(mmi)
-
-	var hidden := []
-	hidden.resize(positions.size())
-	hidden.fill(0)
-	decor_sets.append({"mm": mm, "pos": positions, "hidden": hidden, "bodies": bodies})
-
-# Resources sit at fixed spots scattered at random over the field. Each spot grows its
-# resource back some time after you take it.
-func scatter_pickups() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 42
-	var kinds: Array[String] = ["sugar", "pebble", "fiber", "resin"]
-	var tries := 0
-	while pickup_sites.size() < PICKUP_SITES and tries < 600:
-		tries += 1
-		var x := rng.randf_range(-HALF + 4, HALF - 4)
-		var z := rng.randf_range(-HALF + 4, HALF - 4)
+# Resources sit at fixed spots. Each spot grows its resource back some time after you take it.
+func region_pickups(job: Dictionary) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	var rkey: Vector2i = job["key"]
+	if region_sites.has(rkey):
+		for i in region_sites[rkey]:
+			spawn_pickup(i)
+		return
+	region_sites[rkey] = []
+	for i in int(PICKUPS_PER_REGION + rng.randf()):
+		var sp := region_spot(job, 2.0)
+		var x := sp.x
+		var z := sp.y
+		if not inland(x, z):
+			continue
 		if Vector2(x, z).distance_to(Vector2(storage_pos.x, storage_pos.z)) < 6.0:
 			continue
 		if near_pool(x, z) or near_obstacle(x, z, 2.0):
 			continue
+		var options: Array = BIOME_RESOURCES[biome_at(x, z)]
 		pickup_sites.append({
 			"pos": Vector3(x, ground_height(x, z) + 0.3, z),
-			"kind": kinds[pickup_sites.size() % 4],
+			"kind": options[rng.randi() % options.size()],
 		})
-	for i in pickup_sites.size():
-		spawn_pickup(i)
+		region_sites[rkey].append(pickup_sites.size() - 1)
+		spawn_pickup(pickup_sites.size() - 1)
 
-func spawn_pickup(i: int) -> void:
-	var site: Dictionary = pickup_sites[i]
-	var pos: Vector3 = site["pos"]
-	var p := Pickup.new()
-	p.kind = site["kind"]
-	p.amount = randi_range(4, 10)
-	p.home = pos
-	# Held still where it sits, so it never drops from the sky or slides about.
-	# It is released only if the ground under it gets dug away.
-	p.freeze = world.sample_density(pos - Vector3(0, 0.6, 0)) > 0.0
-	p.depleted.connect(func(): get_tree().create_timer(PICKUP_RESPAWN_SECONDS).timeout.connect(spawn_pickup.bind(i)))
-	add_child(p)
-	p.global_position = pos
+func region_creatures(job: Dictionary) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	for i in int(FIREFLIES_PER_REGION + rng.randf()):
+		var sp := region_spot(job, 3.0)
+		if inland(sp.x, sp.y) and rng.randf() <= FIREFLY_CHANCE[biome_at(sp.x, sp.y)]:
+			spawn_firefly(Vector3(sp.x, ground_height(sp.x, sp.y) + 3.0, sp.y))
+	for i in int(SPIDERS_PER_REGION + rng.randf()):
+		var sp := region_spot(job, 4.0)
+		if not inland(sp.x, sp.y):
+			continue
+		if sp.distance_to(STORAGE_XZ) < 14.0 or near_pool(sp.x, sp.y, 2.0) or near_obstacle(sp.x, sp.y, 2.0):
+			continue
+		spawn_spider(Vector3(sp.x, ground_height(sp.x, sp.y) + 0.5, sp.y))
 
-# After a dig, let nearby resources fall into the new hole instead of hovering.
-func wake_pickups(point: Vector3, radius: float) -> void:
-	for p in get_tree().get_nodes_in_group("pickups"):
-		if (p as Pickup).global_position.distance_to(point) < radius + 2.0:
-			(p as Pickup).freeze = false
+
+# ---------- World streaming ----------
+# The world is much bigger than what is built at once. Terrain data is generated in
+# 16 x 16 columns near the ant, a smaller ring of columns is drawn, and columns left far
+# behind are un-drawn. Edits stay in memory, so dug ground is still dug when you return.
+
+func col_of(pos: Vector3) -> Vector2i:
+	return Vector2i(floori(pos.x / Chunk.SIZE), floori(pos.z / Chunk.SIZE))
+
+func col_in_world(c: Vector2i) -> bool:
+	var m := int(HALF / float(Chunk.SIZE))
+	return c.x >= -m and c.x < m and c.y >= -m and c.y < m
+
+func region_key(x: float, z: float) -> Vector2i:
+	return Vector2i(floori(x / REGION_SIZE), floori(z / REGION_SIZE))
+
+func region_rect(key: Vector2i) -> Rect2:
+	return Rect2(Vector2(key) * REGION_SIZE, Vector2(REGION_SIZE, REGION_SIZE))
+
+func region_node(key: Vector2i) -> Node3D:
+	if not region_nodes.has(key):
+		var n := Node3D.new()
+		add_child(n)
+		region_nodes[key] = n
+	return region_nodes[key]
+
+# Columns within a radius of a center column, nearest first.
+func columns_around(center: Vector2i, radius: float) -> Array:
+	var out := []
+	var r := ceili(radius)
+	for dx in range(-r, r + 1):
+		for dz in range(-r, r + 1):
+			if Vector2(dx, dz).length() > radius:
+				continue
+			var c := center + Vector2i(dx, dz)
+			if col_in_world(c):
+				out.append(c)
+	out.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return Vector2(a - center).length_squared() < Vector2(b - center).length_squared())
+	return out
+
+# True if this column and all its neighbors have terrain data, so it can be drawn correctly.
+func neighbors_have_data(c: Vector2i) -> bool:
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var n := c + Vector2i(dx, dz)
+			if col_in_world(n) and not col_data.has(n):
+				return false
+	return true
+
+# True once the ground at this spot is drawn and solid.
+func ground_ready(pos: Vector3) -> bool:
+	var c := col_of(pos)
+	if not col_in_world(c):
+		return true
+	if not col_meshed.has(c):
+		return false
+	for q in remesh_queue:
+		if q.x == c.x and q.z == c.y:
+			return false
+	return true
+
+func on_column_data(col: Vector2i) -> void:
+	col_data[col] = true
+	try_queue_region(Vector2i(floori(col.x / 2.0), floori(col.y / 2.0)))
+
+# A region (2 x 2 columns) gets its trees, grass and creatures once all its ground exists.
+func try_queue_region(key: Vector2i) -> void:
+	if region_done.has(key):
+		return
+	for dx in 2:
+		for dz in 2:
+			var c := Vector2i(key.x * 2 + dx, key.y * 2 + dz)
+			if col_in_world(c) and not col_data.has(c):
+				return
+	region_done[key] = true
+	region_queue.append(key)
+
+func mark_edited(chunks: Array) -> void:
+	for c in chunks:
+		edited_cols[Vector2i(c.x, c.z)] = true
+
+# Generates terrain data a chunk at a time, within a time budget.
+func gen_step(budget_ms: float) -> void:
+	var start := Time.get_ticks_usec()
+	while true:
+		if gen_job.is_empty():
+			var found = null
+			while not data_wanted.is_empty():
+				var c: Vector2i = data_wanted.pop_front()
+				if not col_data.has(c):
+					found = c
+					break
+			if found == null:
+				return
+			gen_job = {"col": found, "cy": 0, "cache": gen_column_cache(found)}
+		var col: Vector2i = gen_job["col"]
+		fill_chunk(Vector3i(col.x, gen_job["cy"], col.y), gen_job["cache"])
+		gen_job["cy"] += 1
+		if gen_job["cy"] >= HEIGHT_CHUNKS:
+			gen_job = {}
+			on_column_data(col)
+		if (Time.get_ticks_usec() - start) / 1000.0 > budget_ms:
+			return
+
+# Decides what to generate, draw and un-draw for an ant standing at this spot.
+func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
+	var cc := col_of(center)
+
+	data_wanted = []
+	for c in columns_around(cc, data_r):
+		if not col_data.has(c):
+			data_wanted.append(c)
+
+	# Dug columns keep their data when you leave, so their regions need asking for again.
+	for c in columns_around(cc, data_r):
+		if col_data.has(c):
+			try_queue_region(Vector2i(floori(c.x / 2.0), floori(c.y / 2.0)))
+
+	for c in columns_around(cc, mesh_r):
+		if col_meshed.has(c) or not neighbors_have_data(c):
+			continue
+		col_meshed[c] = true
+		var chunks: Array = []
+		for cy in HEIGHT_CHUNKS:
+			if world.chunks.has(Vector3i(c.x, cy, c.y)):
+				chunks.append(Vector3i(c.x, cy, c.y))
+		queue_remesh(chunks, center)
+
+	# Un-draw columns left far behind. Their data stays.
+	for c in col_meshed.keys():
+		if Vector2(c - cc).length() > mesh_r + 1.5:
+			col_meshed.erase(c)
+			for cy in HEIGHT_CHUNKS:
+				var cpos := Vector3i(c.x, cy, c.y)
+				if chunk_nodes.has(cpos):
+					chunk_nodes[cpos].queue_free()
+					chunk_nodes.erase(cpos)
+				remesh_queue.erase(cpos)
+
+	# Grass, rocks, trees and creatures are shown (and run) only over ground that is drawn.
+	for key in region_nodes:
+		var rn: Node3D = region_nodes[key]
+		var shown := false
+		for dx in 2:
+			for dz in 2:
+				if col_meshed.has(Vector2i(key.x * 2 + dx, key.y * 2 + dz)):
+					shown = true
+		rn.visible = shown
+		rn.process_mode = Node.PROCESS_MODE_INHERIT if shown else Node.PROCESS_MODE_DISABLED
+
+	evict_far(center, cc)
+
+	# Water appears once the ground around it exists. One body per update, so it never stutters.
+	var candidates: Array = unbuilt_water
+	if edge_dist(center.x, center.z) < 300.0:
+		candidates = unbuilt_water + unbuilt_rivers
+	for p in candidates:
+		var seed_v: Vector2 = p["seed"]
+		var bound: Vector2 = p["bound"]
+		if absf(seed_v.x - center.x) > 200.0 or absf(seed_v.y - center.z) > 200.0:
+			continue
+		var lo := col_of(Vector3(seed_v.x - bound.x - 2.0, 0, seed_v.y - bound.y - 2.0))
+		var hi := col_of(Vector3(seed_v.x + bound.x + 2.0, 0, seed_v.y + bound.y + 2.0))
+		var all_there := true
+		for cx in range(lo.x, hi.x + 1):
+			for cz in range(lo.y, hi.y + 1):
+				var cq := Vector2i(cx, cz)
+				if col_in_world(cq) and not col_data.has(cq):
+					all_there = false
+		if all_there:
+			add_water_body(p)
+			break
+	for p in built_water:
+		var seed_v: Vector2 = p["seed"]
+		(p["mesh"] as MeshInstance3D).visible = col_meshed.has(col_of(Vector3(seed_v.x, 0, seed_v.y)))
+
+# ---------- Forgetting what is far behind ----------
+# Without this, memory would grow with every step. Far terrain, scenery and water drawings are
+# thrown away and rebuilt identically if you come back. Ground you dug is never forgotten.
+
+func evict_far(center: Vector3, cc: Vector2i) -> void:
+	var done := 0
+	for c in col_data.keys():
+		if Vector2(c - cc).length() <= EVICT_COLS or edited_cols.has(c) or col_meshed.has(c):
+			continue
+		col_data.erase(c)
+		for cy in HEIGHT_CHUNKS:
+			world.chunks.erase(Vector3i(c.x, cy, c.y))
+		done += 1
+		if done >= 8:
+			break
+
+	var far := (EVICT_COLS + 1.0) * Chunk.SIZE
+	var here := Vector2(center.x, center.z)
+	done = 0
+	for key in region_nodes.keys():
+		var mid := (Vector2(key) + Vector2(0.5, 0.5)) * REGION_SIZE
+		if mid.distance_to(here) <= far:
+			continue
+		region_nodes[key].queue_free()
+		region_nodes.erase(key)
+		region_done.erase(key)
+		obstacles_by_region.erase(key)
+		var kept := []
+		for d in decor_sets:
+			var rect: Rect2 = d["rect"]
+			if region_key(rect.position.x + 1.0, rect.position.y + 1.0) != key:
+				kept.append(d)
+		decor_sets = kept
+		done += 1
+		if done >= 4:
+			break
+
+	done = 0
+	for p in built_water.duplicate():
+		var seed_v: Vector2 = p["seed"]
+		if seed_v.distance_to(here) <= far + 40.0:
+			continue
+		(p["mesh"] as MeshInstance3D).queue_free()
+		p.erase("mesh")
+		p.erase("cells")
+		p["built"] = false
+		p["dirty"] = false
+		built_water.erase(p)
+		if p["kind"] == "river":
+			unbuilt_rivers.append(p)
+		else:
+			unbuilt_water.append(p)
+		done += 1
+		if done >= 4:
+			break
+
+# What the ant's biome does to it, and a message on crossing into a new one.
+func update_biome(delta: float) -> void:
+	biome_timer -= delta
+	if biome_timer > 0.0:
+		return
+	biome_timer = 0.25
+	var w := biome_weights(ant.global_position.x, ant.global_position.z)
+	var rest := 1.0
+	var mix := Color(0, 0, 0)
+	for i in w.size():
+		mix += (BIOME_TINT[i + 1] as Color) * w[i]
+		rest -= w[i]
+	biome_tint_target = mix + (BIOME_TINT[0] as Color) * maxf(rest, 0.0)
+	var b := biome_at(ant.global_position.x, ant.global_position.z)
+	ant.terrain_speed = BIOME_WALK_SPEED[b]
+	ant.sprint_cost_mult = BIOME_SPRINT_COST[b]
+	if b != current_biome:
+		current_biome = b
+		var note := ""
+		if b == TUNDRA:
+			note = " (the cold slows you)"
+		elif b == DESERT:
+			note = " (the heat drains your sprint)"
+		elif b == SWAMP:
+			note = " (the mud slows you)"
+		show_message("Entered: %s%s" % [BIOME_NAMES[b], note])
+
+# Blocking load of the area around the start, so the game opens on solid ground.
+func preload_world(center: Vector3) -> void:
+	stream_update(center, 3.0, 2.0)
+	gen_step(1.0e9)
+	stream_update(center, 3.0, 2.0)
+	region_step(1.0e9)
+	while not remesh_queue.is_empty():
+		build_chunk_node(remesh_queue.pop_front())
+
+func stream_world(delta: float) -> void:
+	# The ant waits while the ground under it is still being built.
+	var grounded := ground_ready(ant.global_position)
+	if not grounded and ant.is_physics_processing():
+		ant.velocity = Vector3.ZERO
+	ant.set_physics_process(grounded)
+
+	# Invisible walls at the edge of the world.
+	var lim := float(HALF) - 1.5
+	var ap := ant.global_position
+	if absf(ap.x) > lim or absf(ap.z) > lim:
+		ant.global_position = Vector3(clampf(ap.x, -lim, lim), ap.y, clampf(ap.z, -lim, lim))
+
+	gen_step(GEN_BUDGET_MS)
+	region_step(REGION_BUDGET_MS)
+	stream_timer -= delta
+	if stream_timer <= 0.0:
+		stream_timer = 0.3
+		stream_update(ant.global_position, DATA_RADIUS, MESH_RADIUS)
 
 # ---------- Chunks ----------
 
@@ -1985,7 +2869,9 @@ func process_remesh_queue() -> void:
 		return
 	var start := Time.get_ticks_usec()
 	while not remesh_queue.is_empty():
-		build_chunk_node(remesh_queue.pop_front())
+		var nxt: Vector3i = remesh_queue.pop_front()
+		if col_meshed.has(Vector2i(nxt.x, nxt.z)):   # skip chunks whose column was unloaded meanwhile
+			build_chunk_node(nxt)
 		if (Time.get_ticks_usec() - start) / 1000.0 > REMESH_BUDGET_MS:
 			break
 
@@ -2166,12 +3052,13 @@ func setup_environment() -> void:
 	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.6
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.82, 0.82, 0.78)
+	env.ambient_light_energy = 0.75
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.7, 0.8, 0.9)
-	env.fog_density = 0.002
+	env.fog_density = FOG_DENSITY
 
 	# Ambient occlusion darkens creases and tunnels (Forward+ renderer only).
 	env.ssao_enabled = true
@@ -2182,7 +3069,7 @@ func setup_environment() -> void:
 	env.glow_enabled = true
 	env.glow_intensity = 0.6
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 1.35
+	env.adjustment_saturation = 1.2
 
 	var we := WorldEnvironment.new()
 	we.environment = env

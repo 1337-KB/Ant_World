@@ -28,6 +28,8 @@ static func block_color(id: int) -> Color:
 		Blocks.MUD: return Color(0.17, 0.12, 0.09)
 		Blocks.GRAVEL: return Color(0.55, 0.52, 0.47)
 		Blocks.CHALK: return Color(0.86, 0.85, 0.80)
+		Blocks.SNOW: return Color(0.93, 0.96, 1.0)
+		Blocks.DRY_GRASS: return Color(0.80, 0.66, 0.28)
 	return Color(1, 0, 1)  # magenta = unknown material
 
 # Final color of one vertex: base material color, then slope, veins, staining,

@@ -11,3 +11,5 @@ const SAND := 5
 const MUD := 6
 const GRAVEL := 7
 const CHALK := 8
+const SNOW := 9
+const DRY_GRASS := 10

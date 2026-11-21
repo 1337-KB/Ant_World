@@ -147,6 +147,8 @@ func _physics_process(delta: float) -> void:
 		if death_time > 2.5:
 			queue_free()
 		return
+	if is_loaded.is_valid() and not is_loaded.call(global_position):
+		return   # the ground here is not built yet, so wait
 	if not active:
 		return   # hiding for the day
 	time += delta
