@@ -25,6 +25,16 @@ const TRAP_HOLD_SECONDS := 4.0
 var uses_left := TRAP_USES
 var web: Node3D
 
+# Gravity. If the ground under a placed item is dug away, it falls until something holds it.
+signal moved(p: Placeable)
+const FALL_GRAVITY := 28.0
+const FALL_LIMIT := 40.0
+var world: World
+var fall_speed := 0.0
+var fall_dist := 0.0
+var support_timer := randf() * 0.3
+var falling := false
+
 func _ready() -> void:
 	collision_layer = 0 if type == "trap" else 5   # layers 1 and 4, same as building pieces. Traps are walked over.
 	collision_mask = 0
@@ -238,6 +248,49 @@ func take_damage(amount: float) -> void:
 	update_health_label()
 	if health <= 0.0:
 		destroyed.emit(self)
+
+# Is something solid right under the bottom of this item? Terrain by density, or another placed thing / building piece.
+func supported() -> bool:
+	if world == null:
+		return true
+	var info: Dictionary = Crafting.RECIPES[type]
+	var size: Vector3 = info["size"]
+	var half := size * 0.5
+	var down := -global_transform.basis.y
+	var base := global_position + down * (half.y + 0.2)
+	for off in [Vector3.ZERO, Vector3(half.x * 0.7, 0, 0), Vector3(-half.x * 0.7, 0, 0), Vector3(0, 0, half.z * 0.7), Vector3(0, 0, -half.z * 0.7)]:
+		if world.sample_density(base + global_transform.basis * off) > 0.0:
+			return true
+	var q := PhysicsRayQueryParameters3D.create(global_position, global_position + down * (half.y + 0.35), 1)
+	q.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if not hit.is_empty():
+		var col: Object = hit["collider"]
+		if col is Placeable or col is Piece:
+			return true
+	return false
+
+func _physics_process(delta: float) -> void:
+	if world == null:
+		return
+	if not falling:
+		support_timer -= delta
+		if support_timer > 0.0:
+			return
+		support_timer = 0.3
+		if supported():
+			return
+		falling = true
+		fall_speed = 0.0
+		fall_dist = 0.0
+	fall_speed += FALL_GRAVITY * delta
+	var step := fall_speed * delta
+	global_position.y -= step
+	fall_dist += step
+	if supported() or fall_dist > FALL_LIMIT:
+		falling = false
+		support_timer = 0.3
+		moved.emit(self)
 
 func _process(delta: float) -> void:
 	if type != "queen" or health <= 0.0:

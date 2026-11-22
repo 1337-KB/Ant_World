@@ -26,6 +26,26 @@ const WATER_SLOW := 0.15     # slowdown at a full water load
 const LOAD_SLOWS_ANT := false # false: carrying things never slows you down
 const SHOW_LOAD := false       # false: no bulge on the ant's back when carrying resources
 const MAX_HEALTH := 100.0
+# Dash: press Ctrl. Moving forward (or standing still) dashes at what is ahead and hurts what you hit.
+# Holding A, D or S dashes sideways or back instead, and you cannot be hurt for a moment.
+const DASH_KEY := KEY_CTRL
+const DASH_SPEED := 30.0
+const DASH_TIME := 0.22         # a dash covers about 6.6 units
+const DASH_COOLDOWN := 1.0
+const DASH_COST := 20.0         # energy
+const DASH_DAMAGE := 20.0       # forward dash damage for a worker. Soldiers multiply it (dash_dmg)
+const DASH_HIT_RADIUS := 2.2
+const EVADE_TIME := 0.35        # invulnerable this long after a side or back dash
+const ROCK_SLOW := 0.12        # slowdown when carrying a full load of rocks
+const ROCK_CAP := 12          # soldiers can carry this many rocks
+# Classes. You change class by pressing E next to your queen.
+const ROLE_NAMES := ["Worker", "Soldier"]
+const ROLES := [
+	# Worker: quickest, carries a lot, normal acid spray.
+	{"speed": 1.2, "health": 100.0, "spray_range": 1.0, "spray_dmg": 1.0, "carry": 1.6, "soil": 1.5, "water": 1.5, "pickup": 1.6, "dig_max": 3.5, "dash_dmg": 1.0},
+	# Soldier: normal speed, tough, a powerful long acid spray, carries only soil and water.
+	{"speed": 1.0, "health": 160.0, "spray_range": 2.6, "spray_dmg": 1.3, "carry": 0.0, "soil": 1.0, "water": 1.0, "pickup": 1.0, "dig_max": 2.5, "dash_dmg": 2.25},
+]
 const WADE_SLOW := 0.6       # walking speed in water, as a fraction of normal
 const SWIM_SPEED := 3.6      # swimming speed
 const FLOAT_DEPTH := 0.35    # how far under the surface the body rests when you just float
@@ -50,6 +70,21 @@ var look_pitch := 0.0        # mouse tilting waiting to be applied
 var key_turn := 0.0          # current A/D turning speed
 var spawn_point := Vector3(0, 70, 0)   # where you respawn (the queen, once placed)
 var health := MAX_HEALTH
+var role := 0                  # 0 = worker, 1 = soldier
+var max_health := MAX_HEALTH
+var rocks := 0                 # soldiers make these from soil and throw them
+var eat_cd := 0.0
+var dash_time := 0.0           # time left in the current dash
+var dash_cd := 0.0
+var dash_vec := Vector3.ZERO
+var dash_forward := false
+var dash_hit: Array = []       # creatures already hit by this dash
+var invuln := 0.0              # no damage while above zero
+var dash_key_down := false
+signal dashed(forward: bool)
+signal dash_hit_creature(c: Node)
+var body_mat: StandardMaterial3D
+var soldier_parts: Node3D
 var terrain_speed := 1.0       # set by the biome: cold and mud slow the ant
 var sprint_cost_mult := 1.0    # set by the biome: heat drains sprint energy faster
 var has_queen := false   # set by main every frame
@@ -64,6 +99,9 @@ var controls_locked := false   # true while a menu is open: no walking, jumping,
 var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0, "resin": 0}
 var soil := 0.0              # filled by digging
 var water := 0.0             # filled by drinking at pools
+var poison_time := 0.0        # seconds of poison left. Eating sugar cures it.
+var poison_dps := 0.0
+var poison_tick := 0.0
 
 # Visual model
 var model: Node3D
@@ -117,6 +155,7 @@ func build_model() -> void:
 	add_child(model)
 
 	var mat := StandardMaterial3D.new()
+	body_mat = mat
 	mat.albedo_color = Color(0.16, 0.07, 0.04)
 	mat.roughness = 0.4
 	mat.metallic = 0.1
@@ -178,6 +217,41 @@ func build_model() -> void:
 	load_bulge.visible = false
 	model.add_child(load_bulge)
 
+	# Soldier gear: a big armored head and long jaws. Hidden for workers.
+	soldier_parts = Node3D.new()
+	soldier_parts.visible = false
+	model.add_child(soldier_parts)
+	var head_mat := StandardMaterial3D.new()
+	head_mat.albedo_color = Color(0.5, 0.1, 0.05)
+	head_mat.roughness = 0.35
+	head_mat.metallic = 0.2
+	var head := MeshInstance3D.new()
+	var hm := SphereMesh.new()
+	hm.radius = 0.27
+	hm.height = 0.54
+	hm.radial_segments = 16
+	hm.rings = 8
+	head.mesh = hm
+	head.material_override = head_mat
+	head.scale = Vector3(1.25, 1.0, 1.15)
+	head.position = Vector3(0, 0.03, -0.52)
+	soldier_parts.add_child(head)
+	for s2 in [-1.0, 1.0]:
+		var jaw_pivot := Node3D.new()
+		jaw_pivot.position = Vector3(s2 * 0.14, -0.04, -0.7)
+		jaw_pivot.rotation.y = -s2 * 0.4
+		var jaw := MeshInstance3D.new()
+		var jm := CylinderMesh.new()
+		jm.top_radius = 0.012
+		jm.bottom_radius = 0.04
+		jm.height = 0.4
+		jaw.mesh = jm
+		jaw.material_override = mat
+		jaw.rotation.x = PI / 2.0
+		jaw.position = Vector3(0, 0, -0.18)
+		jaw_pivot.add_child(jaw)
+		soldier_parts.add_child(jaw_pivot)
+
 func _blob(mat: StandardMaterial3D, radius: float, squash: Vector3, pos: Vector3) -> void:
 	var mi := MeshInstance3D.new()
 	var m := SphereMesh.new()
@@ -212,7 +286,7 @@ func update_model(delta: float) -> void:
 			best_kind = k
 	load_bulge.visible = SHOW_LOAD and total > 0
 	if SHOW_LOAD and total > 0:
-		var frac := float(total) / float(CAPACITY * inventory.size())
+		var frac := clampf(float(total) / maxf(1.0, carry_cap("sugar") * inventory.size()), 0.0, 1.0)
 		load_bulge.scale = Vector3.ONE * (0.4 + 1.3 * pow(frac, 0.7))
 		load_mat.albedo_color = Pickup.KINDS[best_kind]["color"]
 
@@ -229,8 +303,9 @@ func _input(event: InputEvent) -> void:
 		deposit_requested.emit()
 
 func _process(delta: float) -> void:
-	if has_queen and health < REGEN_CAP:
-		health = minf(REGEN_CAP, health + HEALTH_REGEN * delta)
+	var regen_cap := REGEN_CAP * max_health / MAX_HEALTH
+	if has_queen and health < regen_cap:
+		health = minf(regen_cap, health + HEALTH_REGEN * delta)
 	# Apply a fraction of the queued mouse movement each frame, so looking is soft.
 	var k := minf(1.0, MOUSE_SMOOTH * delta)
 	var step_yaw := look_yaw * k
@@ -258,6 +333,17 @@ func _process(delta: float) -> void:
 
 func _physics_process(delta: float) -> void:
 	detach_timer -= delta
+	eat_cd -= delta
+	dash_cd -= delta
+	invuln -= delta
+
+	# Poison: a pulse of damage every second until it wears off.
+	if poison_time > 0.0:
+		poison_time -= delta
+		poison_tick -= delta
+		if poison_tick <= 0.0:
+			poison_tick = 1.0
+			take_damage(poison_dps)
 
 	# Walk relative to where the ant is facing (always along its surface).
 	var input := Vector3.ZERO
@@ -269,7 +355,7 @@ func _physics_process(delta: float) -> void:
 		if Input.is_key_pressed(KEY_D): input.x += 1.0
 	var dir := (basis * input).normalized()
 
-	var speed: float = SPEED * (1.0 - load_slow()) * terrain_speed
+	var speed: float = SPEED * stat("speed") * (1.0 - load_slow()) * terrain_speed
 
 	# Water: wading slows you down, and once your body is under the surface you swim.
 	var surf := -INF
@@ -294,6 +380,18 @@ func _physics_process(delta: float) -> void:
 		energy = minf(ENERGY_MAX, energy + ENERGY_REGEN * delta)
 		if exhausted and energy >= RECOVER_AT:
 			exhausted = false
+
+	# Dash
+	var key_now := not controls_locked and Input.is_key_pressed(DASH_KEY)
+	if key_now and not dash_key_down and not swimming and attached and dash_cd <= 0.0 and dash_time <= 0.0 and energy >= DASH_COST:
+		start_dash()
+	dash_key_down = key_now
+	if dash_time > 0.0:
+		dash_time -= delta
+		dir = dash_vec
+		speed = DASH_SPEED
+		if dash_forward:
+			dash_strike()
 
 	if swimming:
 		swim(delta, depth)
@@ -331,6 +429,43 @@ func _physics_process(delta: float) -> void:
 
 	if global_position.y < -20.0:
 		respawn()
+
+func start_dash() -> void:
+	var left := Input.is_key_pressed(KEY_A)
+	var right := Input.is_key_pressed(KEY_D)
+	var back := Input.is_key_pressed(KEY_S)
+	dash_forward = true
+	dash_vec = -basis.z
+	if left and not right:
+		dash_vec = -basis.x
+		dash_forward = false
+	elif right and not left:
+		dash_vec = basis.x
+		dash_forward = false
+	elif back:
+		dash_vec = basis.z
+		dash_forward = false
+	dash_vec = dash_vec.normalized()
+	dash_time = DASH_TIME
+	dash_cd = DASH_COOLDOWN
+	energy -= DASH_COST
+	dash_hit.clear()
+	if not dash_forward:
+		invuln = EVADE_TIME
+	dashed.emit(dash_forward)
+
+# During a forward dash, hurt each creature the ant runs into, once.
+func dash_strike() -> void:
+	var center := global_position + basis.y * 0.4 * BODY_SCALE + dash_vec * 0.9
+	var dmg := DASH_DAMAGE * stat("dash_dmg")
+	for node in get_tree().get_nodes_in_group("creatures"):
+		var c := node as Creature
+		if c == null or not c.active or dash_hit.has(c):
+			continue
+		if (c.global_position + Vector3(0, 0.5, 0)).distance_to(center) < DASH_HIT_RADIUS:
+			dash_hit.append(c)
+			c.take_damage(dmg)
+			dash_hit_creature.emit(c)
 
 # Returns the normal of the surface we should stick to, or null.
 func find_surface(dir: Vector3) -> Variant:
@@ -379,15 +514,73 @@ func rotate_up_toward(target: Vector3, t: float) -> void:
 # Absorb any pickup within reach, up to the capacity for its type.
 func collect_nearby() -> void:
 	var center := global_position + basis.y * 0.4 * BODY_SCALE
+	var reach := PICKUP_RANGE * stat("pickup")
+	# Soldiers can take their thrown rocks back.
+	if role == 1 and rocks < ROCK_CAP:
+		for node in get_tree().get_nodes_in_group("rocks"):
+			var r := node as RockShot
+			if r != null and r.can_collect() and r.global_position.distance_to(center) <= reach + 1.0:
+				rocks += 1
+				r.queue_free()
+				if rocks >= ROCK_CAP:
+					break
 	for node in get_tree().get_nodes_in_group("pickups"):
 		var p := node as Pickup
-		if p.amount <= 0 or p.global_position.distance_to(center) > PICKUP_RANGE:
+		if p.amount <= 0 or p.global_position.distance_to(center) > reach:
+			continue
+		var cap := int(carry_cap(p.kind))
+		if cap <= 0:
+			# This class cannot carry it. A soldier eats sugar on the spot instead.
+			if p.kind == "sugar" and eat_cd <= 0.0 and (health < max_health or poison_time > 0.0):
+				if p.take(1) > 0:
+					eat_cd = 0.3
+					health = minf(max_health, health + SUGAR_HEAL)
+					poison_time = 0.0
+					poison_dps = 0.0
 			continue
 		var have: int = inventory[p.kind]
-		var space := CAPACITY - have
+		var space := cap - have
 		if space <= 0:
 			continue
 		inventory[p.kind] = have + p.take(space)
+
+# ---------- Classes ----------
+
+func stat(key: String) -> float:
+	return float((ROLES[role] as Dictionary)[key])
+
+func soil_cap() -> float:
+	return SOIL_CAPACITY * stat("soil")
+
+func water_cap() -> float:
+	return WATER_CAPACITY * stat("water")
+
+# Switches class. Anything the new class cannot carry is returned, so the caller can drop it.
+func set_role(new_role: int) -> Dictionary:
+	var fraction := clampf(health / max_health, 0.0, 1.0)
+	role = new_role
+	max_health = stat("health")
+	health = fraction * max_health   # you keep the same fraction of health
+	var overflow := {}
+	if role != 1 and rocks > 0:
+		inventory["pebble"] = int(inventory["pebble"]) + rocks   # rocks crumble into pebbles
+		rocks = 0
+	for k in inventory:
+		var cap := int(carry_cap(k))
+		var have := int(inventory[k])
+		if have > cap:
+			overflow[k] = have - cap
+			inventory[k] = cap
+	soil = minf(soil, soil_cap())
+	water = minf(water, water_cap())
+	apply_role_look()
+	return overflow
+
+func apply_role_look() -> void:
+	var soldier := role == 1
+	body_mat.albedo_color = Color(0.32, 0.07, 0.04) if soldier else Color(0.16, 0.07, 0.04)
+	soldier_parts.visible = soldier
+	model.scale = Vector3.ONE * BODY_SCALE * (1.18 if soldier else 1.0)
 
 # Total slowdown from everything you're carrying.
 func load_slow() -> float:
@@ -395,27 +588,38 @@ func load_slow() -> float:
 		return 0.0
 	var total := 0.0
 	for k in inventory:
-		total += float(inventory[k]) / CAPACITY * float(Pickup.KINDS[k]["slow"])
-	total += soil / SOIL_CAPACITY * SOIL_SLOW
-	total += water / WATER_CAPACITY * WATER_SLOW
+		total += float(inventory[k]) / float(CAPACITY) * float(Pickup.KINDS[k]["slow"])
+	total += soil / soil_cap() * SOIL_SLOW
+	total += water / water_cap() * WATER_SLOW
+	total += float(rocks) / float(ROCK_CAP) * ROCK_SLOW
 	return total
 
 func take_damage(amount: float) -> void:
+	if invuln > 0.0:
+		return   # dodging
 	health -= amount
 	if health <= 0.0:
 		died.emit()
 		respawn()
 
+func apply_poison(seconds: float, dps: float) -> void:
+	poison_time = maxf(poison_time, seconds)
+	poison_dps = maxf(poison_dps, dps)
+
 # Eat one sugar from what you carry. Returns true if it worked.
 func eat_sugar() -> bool:
-	if int(inventory["sugar"]) <= 0 or health >= MAX_HEALTH:
+	if int(inventory["sugar"]) <= 0 or health >= max_health:
 		return false
 	inventory["sugar"] = int(inventory["sugar"]) - 1
-	health = minf(MAX_HEALTH, health + SUGAR_HEAL)
+	health = minf(max_health, health + SUGAR_HEAL)
+	poison_time = 0.0   # sugar cures poison
+	poison_dps = 0.0
 	return true
 
 func respawn() -> void:
-	health = REGEN_CAP if has_queen else NO_QUEEN_RESPAWN_HEALTH
+	health = (REGEN_CAP if has_queen else NO_QUEEN_RESPAWN_HEALTH) * max_health / MAX_HEALTH
+	poison_time = 0.0
+	poison_dps = 0.0
 	global_position = spawn_point
 	basis = Basis.IDENTITY
 	velocity = Vector3.ZERO
@@ -425,18 +629,21 @@ func carried(kind: String) -> float:
 	match kind:
 		"soil": return soil
 		"water": return water
+		"rock": return float(rocks)
 	return float(inventory[kind])
 
 func carry_cap(kind: String) -> float:
 	match kind:
-		"soil": return SOIL_CAPACITY
-		"water": return WATER_CAPACITY
-	return float(CAPACITY)
+		"soil": return soil_cap()
+		"water": return water_cap()
+		"rock": return float(ROCK_CAP) if role == 1 else 0.0
+	return float(CAPACITY) * stat("carry")
 
 func set_carried(kind: String, value: float) -> void:
 	match kind:
 		"soil": soil = value
 		"water": water = value
+		"rock": rocks = int(value)
 		_: inventory[kind] = int(value)
 
 # Swimming: W and S go where the camera looks (look down to dive), Space rises, Ctrl sinks.

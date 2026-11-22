@@ -14,6 +14,8 @@ const SAVANNA := 5
 const BIOME_NAMES := ["Forest", "Desert dunes", "Rocky highlands", "Frozen tundra", "Swamp", "Savanna"]
 const TREE_CHANCE := [1.0, 0.3, 0.3, 0.3, 0.6, 0.35]  # how likely a plant site is accepted, per biome (the plant differs by biome)
 const ROCK_CHANCE := [0.4, 0.5, 1.0, 0.6, 0.15, 0.3]   # same for boulders
+const BEETLE_CHANCE := [1.0, 0.2, 0.3, 0.1, 0.6, 1.0]       # per biome: forest, desert, highlands, tundra, swamp, savanna
+const CENTIPEDE_CHANCE := [0.8, 0.2, 0.8, 0.0, 1.0, 0.1]
 const FIREFLY_CHANCE := [0.5, 0.05, 0.1, 0.15, 1.0, 0.1]
 const BIOME_WALK_SPEED := [1.0, 1.0, 1.0, 0.8, 0.85, 1.0]   # walking speed in each biome (cold, mud slow you)
 const BIOME_SPRINT_COST := [1.0, 1.6, 1.0, 1.0, 1.0, 1.0]   # the heat drains sprint energy faster
@@ -30,30 +32,40 @@ const BIOME_RESOURCES := [                             # what the resource sites
 const HALF := 7200   # the world is 2 * HALF units across (multiple of 16). 7200 is about 20 minutes of walking from the start to the river.
 const LAND := HALF - 24   # trees, pools, grass... stay inside this, clear of the river
 const BIOME_FREQ := 0.002   # lower = bigger biomes. 0.002 means a biome is roughly 500 units across.
-const HEIGHT_CHUNKS := 4      # the world is 16 * this many units tall
+const HEIGHT_CHUNKS := 6      # the world is 16 * this many units tall (termite mounds are tall)
 const SURFACE_BASE := 44.0     # roughly how high the ground surface sits
 const POCKET_MIN_DEPTH := 22.0   # underground water starts at least this far below the surface
 const POOL_CELL := 256         # the world is split into squares this big; each may hold one surface pool
+const LAKE_CHANCE := 0.3       # chance that a forest square holds a big lake (the square with the start always does)
 const POOL_CHANCE := 0.4       # chance that a square has a pool at all (lower = rarer)
 const POCKET_CELL := 64        # squares for underground water pockets
 const POCKET_TRIES := 6        # pocket attempts per square
 const SOIL_PER_VOLUME := 0.5   # soil gained per unit of ground dug out
 const DRINK_RATE := 30.0       # water gained per second while holding F
 # Per region (a 32 x 32 square): how much of each thing is placed. Lower = emptier world.
-const TREES_PER_REGION := 1.6
+const TREES_PER_REGION := 6.0
 const BOULDERS_PER_REGION := 4.0
 const GRASS_CLUMPS_PER_REGION := 160
 const PEBBLES_PER_REGION := 120
 const PICKUPS_PER_REGION := 6.0
 const FIREFLIES_PER_REGION := 0.8
 const SPIDERS_PER_REGION := 0.3
+const BEETLES_PER_REGION := 0.3
+const CENTIPEDES_PER_REGION := 0.25
 const REGION_BUDGET_MS := 4.0   # time per frame spent building region content
-const EVICT_COLS := 9.0         # terrain farther than this many columns (16 units each) away is forgotten, unless you dug it
+const MOUND_CELL := 320         # the world is split into squares this big; each may hold a termite mound
+const MOUND_CHANCE := [0.35, 0.4, 0.15, 0.0, 0.25, 0.9]   # per biome: forest, desert, highlands, tundra, swamp, savanna
+const MOUND_START_CLEAR := 150.0    # no mounds this close to the start, and rarer out to 700
+const EVICT_COLS := 14.0         # terrain farther than this many columns (16 units each) away is forgotten, unless you dug it
 const GRASS_MIN_HEIGHT := 0.8
 const GRASS_MAX_HEIGHT := 2.0
 const PEBBLE_SOLID_MIN := 0.5   # pebbles at least this big are solid; smaller ones you walk over
 const DIG_RADIUS := 2.0
 const SMOOTH_RADIUS := 3.0
+const BRUSH_MIN := 1.4          # smallest dig size
+const BRUSH_MAX := 3.5          # largest dig size for any ant. Each class has its own limit (dig_max in ant.gd).
+const BRUSH_STEP := 0.4         # change per mouse wheel notch or [ ] press
+var brush := DIG_RADIUS         # current dig radius. Smoothing and filling scale with it.
 const HOLD_DELAY := 0.35       # a click digs once; holding past this repeats the dig
 const DIG_INTERVAL := 0.14     # seconds between digs while holding
 const REACH := 30.0
@@ -62,15 +74,30 @@ const STORAGE_RADIUS := 3.0
 const FIREFLY_RESPAWN_SECONDS := 60.0
 const SPRAY_RANGE := 10.0              # how far the acid spray reaches
 const SPRAY_DPS := 25.0                # damage per second to what it hits
+const QUEEN_MENU_RANGE := 6.0          # how close to your queen to change class
+const SOIL_PER_ROCK := 15.0            # soil used to make one rock (Y, soldiers)
+const ROCK_SPEED := 32.0
+const ROCK_DAMAGE := 40.0
+const ROCK_COOLDOWN := 0.55
 const ACID_DRAIN := 25.0               # acid used per second of spraying
 const ACID_REGEN := 12.0               # acid regained per second when not spraying
 # World streaming: terrain is generated and drawn in columns of 16 x 16 units around the ant.
-const DATA_RADIUS := 5        # columns of terrain data kept generated around the ant
-const MESH_RADIUS := 4        # columns actually drawn, with collision
+const DATA_RADIUS := 11       # columns of terrain data kept generated around the ant
+const MESH_RADIUS := 9        # columns actually drawn (about 144 units)
+const COLLISION_COLS := 7.0   # only ground this close is solid; farther ground is just a picture, which is much cheaper
+const TERRAIN_FADE_START := 70.0   # the detailed ground starts to thin out here...
+const TERRAIN_FADE_END := 105.0    # ...and is gone here, where the distant land takes over
+const TREE_FADE_END := 98.0         # trees and rocks fade out by about here
+const GRASS_FADE_START := 50.0
+const GRASS_FADE_END := 78.0
+const GRASS_COLS := 7.0       # grass and pebbles are drawn only this close (there are far too many to draw all the way out)
+const ACTIVE_COLS := 4.0      # creatures only move and think this close
 const REGION_SIZE := 32.0     # grass, rocks and trees are grouped in squares this big, shown only near the ant
 const GEN_BUDGET_MS := 4.0    # time per frame spent generating terrain data
 const DAY_LENGTH := 600.0              # seconds for a full day and night (10 minutes)
 const SPIDER_RESPAWN_SECONDS := 120.0
+const BEETLE_RESPAWN_SECONDS := 150.0
+const CENTIPEDE_RESPAWN_SECONDS := 150.0
 const PICKUP_RESPAWN_SECONDS := 90.0   # how long a spot takes to grow its resource back
 const PIECE_ORDER := ["pebble_wall", "fiber_floor", "pillar"]
 
@@ -84,6 +111,9 @@ uniform float sway_speed = 1.4;
 varying float tip;
 varying float rnd;
 varying vec2 kind;   // x: dry (golden savanna grass), y: dark (swamp)
+varying float dist;
+uniform float fade_start = 50.0;
+uniform float fade_end = 78.0;
 
 float hash21(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));
@@ -95,6 +125,7 @@ void vertex() {
 	tip = UV.y;
 	kind = COLOR.rg;
 	vec3 origin = MODEL_MATRIX[3].xyz;
+	dist = length(origin - INV_VIEW_MATRIX[3].xyz);
 	rnd = hash21(origin.xz * 0.7);
 	float phase = TIME * sway_speed + origin.x * 0.6 + origin.z * 0.45;
 	float bend = sin(phase) * sway_strength * tip * tip;
@@ -103,6 +134,10 @@ void vertex() {
 }
 
 void fragment() {
+	// Blades thin out with a fine dither toward the edge of the grass, so it never pops in.
+	if (hash21(FRAGCOORD.xy) > 1.0 - smoothstep(fade_start, fade_end, dist)) {
+		discard;
+	}
 	vec3 green = mix(vec3(0.10, 0.55, 0.06), vec3(0.40, 0.80, 0.10), rnd);
 	vec3 dry = mix(vec3(0.62, 0.50, 0.16), vec3(0.88, 0.76, 0.36), rnd);
 	vec3 base = mix(green, dry, kind.x);
@@ -185,6 +220,8 @@ var stream_timer := 0.0
 var region_nodes := {}   # Vector2i -> Node3D holding that square's grass, rocks and trees
 var pool_cells := {}      # Vector2i -> pools in that square (made the first time it is looked at)
 var pocket_cells := {}    # same for underground pockets
+var mound_cells := {}     # same for termite mounds ({} when a square has none)
+var grey_jobs: Array = []   # chunks of a dead mound waiting to turn grey
 var built_water: Array = []     # water bodies that have been drawn
 var unbuilt_water: Array = []   # water bodies waiting for the ground around them to exist
 var obstacles_by_region := {}   # region -> trees and boulders inside it
@@ -198,6 +235,10 @@ var bark_mat: StandardMaterial3D
 var grass_mat_shared: ShaderMaterial
 var blade_mesh_shared: ArrayMesh
 var pebble_mesh_shared: SphereMesh
+var landmark_mat: StandardMaterial3D
+var flora_mats := {}   # species id -> shared material
+const FLORA_PATCHES_PER_REGION := 22
+const LANDMARK_CHANCE := 0.5   # chance a region has one landmark (log, stump, bottle cap, giant acorn)
 var pebble_mat_shared: StandardMaterial3D
 var grass_density_noise: FastNoiseLite
 var ant: Ant
@@ -214,13 +255,24 @@ var day_time := 0.08       # 0 = sunrise, 0.25 = noon, 0.5 = sunset, 0.75 = midn
 var day_count := 1
 var night_creatures := false   # true while night creatures (fireflies) are out
 var spray: CPUParticles3D
+var rock_cd := 0.0
+var class_menu_open := false
+var class_open_frame := -1
+var class_layer: CanvasLayer
+var class_buttons: Array = []
 var douse_fx: CPUParticles3D
 var fire_cd := 0.0
 var res_panel: PanelContainer
 var res_rows := {}   # kind -> {"carry": Label, "stored": Label}
+var world_map: WorldMap
+var sky_life: SkyLife
+var far_terrain: FarTerrain
 var show_help := false   # F1 toggles the full controls list
 var health_bar: ProgressBar
 var acid_bar: ProgressBar
+var brush_preview: MeshInstance3D
+var brush_show := 0.0          # seconds the dig size display stays on screen after you change it
+const BRUSH_SHOW_TIME := 2.5
 var pickup_sites := []   # each: {pos, kind}
 var queen: Placeable = null   # the colony's queen, once placed
 var hud: Label
@@ -254,6 +306,7 @@ func _ready() -> void:
 	setup_environment()
 	setup_crosshair()
 	setup_hud()
+	setup_map()
 	setup_noise()
 	setup_terrain_material()
 	setup_ghost()
@@ -264,10 +317,22 @@ func _ready() -> void:
 
 	ant = Ant.new()
 	add_child(ant)
+	sky_life = SkyLife.new()
+	add_child(sky_life)
+	far_terrain = FarTerrain.new()
+	far_terrain.height_fn = ground_height
+	far_terrain.kind_fn = surface_kind
+	far_terrain.edge_fn = edge_dist
+	far_terrain.river_width = float(RIVER_WIDTH)
+	far_terrain.river_level = RIVER_LEVEL
+	add_child(far_terrain)
+	setup_headlamp()   # needs the ant's camera, which exists once the ant is in the scene
 	ant.position = storage_pos + Vector3(-6, 15, 0)
 	ant.deposit_requested.connect(_on_deposit)
 	ant.water_surface = water_surface_at
 
+	print_nearest_mounds()
+	print_nearest_lakes()
 	preload_world(Vector3(2, SURFACE_BASE, 8))   # build the ground around the start before the game opens
 
 	crafting = Crafting.new()
@@ -277,15 +342,20 @@ func _ready() -> void:
 	storage_ui.ant = ant
 	add_child(storage_ui)
 	setup_spray()
+	build_class_menu()
 	setup_douse()
 	ant.died.connect(func(): show_message("You were killed. Respawned at your queen." if is_instance_valid(queen) else "You were killed. Respawned at the start."))
+	ant.dash_hit_creature.connect(func(_c): show_message("Dash hit!"))
 	crafting.crafted.connect(func(t: String): show_message("Crafted %s. It is in your hotbar." % Crafting.RECIPES[t]["label"]))
 
 # ---------- Per-frame updates ----------
 
 func _process(delta: float) -> void:
-	ant.controls_locked = crafting.is_open or storage_ui.is_open
+	ant.controls_locked = crafting.is_open or storage_ui.is_open or class_menu_open
+	rock_cd -= delta
+	update_class_menu()
 	ant.has_queen = is_instance_valid(queen)
+	update_cover(delta)
 	update_daynight(delta)
 	water_tint.visible = camera_underwater()
 	if ant.health < last_health - 0.01:
@@ -293,34 +363,40 @@ func _process(delta: float) -> void:
 	last_health = ant.health
 	flash_rect.color.a = maxf(0.0, flash_rect.color.a - delta * 1.5)
 	handle_dig(delta)
+	update_brush_preview()
 	handle_spray(delta)
 	handle_fire(delta)
 	stream_world(delta)
 	update_biome(delta)
+	process_grey()
+	update_map(delta)
 	process_remesh_queue()
 	handle_water(delta)
 	refresh_water(delta)
 
 	message_time -= delta
 	var inv := ant.inventory
-	var cap := Ant.CAPACITY
+	var cap := int(ant.carry_cap("sugar"))
 	var hours := fposmod(6.0 + day_time * 24.0, 24.0)
-	var text := "Day %d   %02d:%02d   %s\n" % [day_count, int(hours), int((hours - floorf(hours)) * 60.0), BIOME_NAMES[current_biome]]
+	var text := "[%s ant]   Day %d   %02d:%02d   %s\n" % [Ant.ROLE_NAMES[ant.role], day_count, int(hours), int((hours - floorf(hours)) * 60.0), BIOME_NAMES[current_biome]]
+	text = text.rstrip("\n") + "\n"
 	for k in res_rows:
 		var have := 0
 		if k == "soil":
 			have = int(ant.soil)
 		elif k == "water":
 			have = int(ant.water)
+		elif k == "rock":
+			have = ant.rocks
 		else:
 			have = int(inv[k])
-		var limit := cap
+		var limit := int(ant.carry_cap(k)) if k != "sugar" else cap
 		if k == "soil":
-			limit = int(Ant.SOIL_CAPACITY)
+			limit = int(ant.soil_cap())
 		elif k == "water":
-			limit = int(Ant.WATER_CAPACITY)
+			limit = int(ant.water_cap())
 		res_rows[k]["carry"].text = "%d/%d" % [have, limit]
-		res_rows[k]["stored"].text = str(stored(k))
+		res_rows[k]["stored"].text = "-" if k == "rock" else str(stored(k))
 
 	if build_mode:
 		text += "\nBUILD MODE\n"
@@ -339,9 +415,13 @@ func _process(delta: float) -> void:
 			if show_help:
 				text += "[Hold click] dig   [Hold X + click] fill   [Hold right click] smooth   [E] open box or barrel\n"
 				text += "[Hold F] drink   [Hold G] acid spray   [H] light fire   [Hold J] douse   [T] eat sugar   [Q] feed queen\n"
-				text += "[Shift] sprint   [C] craft   [1-9] hold item   [B] build   [N] skip 3 hours   [K] respawn   [F1] hide help"
+				text += "[Mouse wheel or [ ]] dig size   [Ctrl] dash (A/D/S + Ctrl to dodge)   [E at queen] change class"
+				if ant.role == 1:
+					text += "   [Y] soil to rock   [V] throw rock"
+				text += "\n"
+				text += "[Shift] sprint   [C] craft   [1-9] hold item   [B] build   [M] map   [N] skip 3 hours   [K] respawn   [F1] hide help"
 			else:
-				text += "[F1] controls   [C] craft   [B] build"
+				text += "[F1] controls   [M] map   [C] craft   [B] build"
 
 	if not water_source.is_empty():
 		text += "\n[Hold F] drink water"
@@ -351,12 +431,15 @@ func _process(delta: float) -> void:
 	hud.visible = not (crafting.is_open or storage_ui.is_open)
 	res_panel.visible = hud.visible
 
+	soil_bar.max_value = ant.soil_cap()
+	water_bar.max_value = ant.water_cap()
+	health_bar.max_value = ant.max_health
 	soil_bar.value = ant.soil
-	(soil_bar.get_child(0) as Label).text = "Soil  %d / %d" % [int(ant.soil), int(Ant.SOIL_CAPACITY)]
+	(soil_bar.get_child(0) as Label).text = "Soil  %d / %d" % [int(ant.soil), int(ant.soil_cap())]
 	water_bar.value = ant.water
-	(water_bar.get_child(0) as Label).text = "Water  %d / %d" % [int(ant.water), int(Ant.WATER_CAPACITY)]
+	(water_bar.get_child(0) as Label).text = "Water  %d / %d" % [int(ant.water), int(ant.water_cap())]
 	health_bar.value = ant.health
-	(health_bar.get_child(0) as Label).text = "Health  %d / %d" % [int(ant.health), int(Ant.MAX_HEALTH)]
+	(health_bar.get_child(0) as Label).text = "Health  %d / %d" % [int(ant.health), int(ant.max_health)]
 	acid_bar.value = ant.acid
 	(acid_bar.get_child(0) as Label).text = "Acid  %d / %d" % [int(ant.acid), int(Ant.ACID_MAX)]
 	energy_bar.value = ant.energy
@@ -431,6 +514,16 @@ func _physics_process(_delta: float) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
+		if class_menu_open:
+			if event.keycode == KEY_E and Engine.get_process_frames() == class_open_frame:
+				return   # this is the same key press that just opened the menu
+			if event.keycode == KEY_E or event.keycode == KEY_ESCAPE:
+				close_class_menu()
+			elif event.keycode == KEY_1:
+				choose_role(0)
+			elif event.keycode == KEY_2:
+				choose_role(1)
+			return
 		if storage_ui.is_open:
 			if event.keycode == KEY_E:
 				dig_lock = true
@@ -462,8 +555,24 @@ func _unhandled_input(event: InputEvent) -> void:
 					show_message("Nothing to eat, or you are at full health. You need sugar on you.")
 			KEY_Q:
 				feed_queen()
+			KEY_BRACKETLEFT:
+				change_brush(-BRUSH_STEP)
+			KEY_BRACKETRIGHT:
+				change_brush(BRUSH_STEP)
+			KEY_Y:
+				convert_soil_to_rock()
+			KEY_V:
+				throw_rock()
 			KEY_N:
 				day_time = fposmod(day_time + 0.125, 1.0)
+			KEY_M:
+				world_map.visible = not world_map.visible
+			KEY_P:
+				TermiteSoldier.passive = not TermiteSoldier.passive
+				show_message("Termite soldiers are now passive. They will not attack." if TermiteSoldier.passive else "Termite soldiers are hostile again.")
+			KEY_Z:
+				if world_map.visible:
+					world_map.cycle_zoom()
 			KEY_F1:
 				show_help = not show_help
 			KEY_K:
@@ -471,8 +580,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				show_message("Respawned at your queen." if is_instance_valid(queen) else "Respawned at the start. Place a queen to set your spawn.")
 
 	if event is InputEventMouseButton and event.pressed:
-		if crafting.is_open or storage_ui.is_open:
+		if crafting.is_open or storage_ui.is_open or class_menu_open:
 			return   # a menu is open, so clicks belong to it
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not build_mode:
+				change_brush(BRUSH_STEP if event.button_index == MOUSE_BUTTON_WHEEL_UP else -BRUSH_STEP)
+			return
 		# First click after pressing Esc just recaptures the mouse.
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -526,7 +639,7 @@ func handle_dig(delta: float) -> void:
 	var point: Vector3 = hit
 
 	# The ground under and around water is too hard to dig.
-	var reach := DIG_RADIUS if digging else SMOOTH_RADIUS
+	var reach := brush if digging else brush * (SMOOTH_RADIUS / DIG_RADIUS)
 	var blocked := is_protected(point, reach)
 	if digging and has_last_dig and not blocked:
 		blocked = is_protected(last_dig_point.lerp(point, 0.5), reach)
@@ -541,24 +654,24 @@ func handle_dig(delta: float) -> void:
 		return
 
 	var dirty: Array[Vector3i]
-	var clear_radius := SMOOTH_RADIUS + 1.0
+	var clear_radius := brush * (SMOOTH_RADIUS / DIG_RADIUS) + 1.0
 	if digging:
 		if has_last_dig and last_dig_point.distance_to(point) < 0.5:
 			return   # barely moved, skip
 		var from := point
 		if has_last_dig and last_dig_point.distance_to(point) < 6.0:
 			from = last_dig_point   # connect to the previous point
-		dirty = world.dig_capsule(from, point, DIG_RADIUS)
+		dirty = world.dig_capsule(from, point, brush)
 		var gained := world.last_removed * SOIL_PER_VOLUME
 		if gained > 0.0:
-			if ant.soil + gained > Ant.SOIL_CAPACITY:
+			if ant.soil + gained > ant.soil_cap():
 				show_message("Soil full. Extra is lost.")
-			ant.soil = minf(Ant.SOIL_CAPACITY, ant.soil + gained)
+			ant.soil = minf(ant.soil_cap(), ant.soil + gained)
 		last_dig_point = point
 		has_last_dig = true
-		clear_radius = DIG_RADIUS + 2.0
+		clear_radius = brush + 2.0
 	else:
-		dirty = world.smooth_sphere(point, SMOOTH_RADIUS)
+		dirty = world.smooth_sphere(point, brush * (SMOOTH_RADIUS / DIG_RADIUS))
 
 	dig_cooldown = DIG_INTERVAL
 	mark_edited(dirty)
@@ -566,6 +679,61 @@ func handle_dig(delta: float) -> void:
 	clear_decor_near(point, clear_radius)
 	wake_pickups(point, clear_radius)
 	mark_water_dirty(point, clear_radius)
+
+# A see-through ball at the aim point shows how big a hole you will dig.
+func update_brush_preview() -> void:
+	if brush_preview == null:
+		brush_preview = MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = 1.0
+		sm.height = 2.0
+		sm.radial_segments = 24
+		sm.rings = 12
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = Color(1.0, 0.95, 0.7, 0.18)
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mat.no_depth_test = false
+		sm.material = mat
+		brush_preview.mesh = sm
+		brush_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		brush_preview.visible = false
+		add_child(brush_preview)
+	brush_show -= get_process_delta_time()
+	var on := brush_show > 0.0 and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not build_mode and crafting.held_type() == "" \
+			and not ant.controls_locked and not ant.swimming
+	if not on:
+		brush_preview.visible = false
+		return
+	var cam := ant.camera
+	var hit = world.raycast(cam.global_position, -cam.global_transform.basis.z, REACH)
+	if hit == null:
+		brush_preview.visible = false
+		return
+	var point: Vector3 = hit
+	var smoothing := Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+	var filling := Input.is_key_pressed(KEY_X)
+	var r := brush
+	var mat2 := (brush_preview.mesh as SphereMesh).material as StandardMaterial3D
+	if smoothing:
+		r = brush * (SMOOTH_RADIUS / DIG_RADIUS)
+		mat2.albedo_color = Color(0.6, 0.8, 1.0, 0.18)
+	elif filling:
+		r = FILL_RADIUS * brush / DIG_RADIUS
+		point -= -cam.global_transform.basis.z * r * 0.7
+		mat2.albedo_color = Color(0.7, 0.5, 0.3, 0.22)
+	else:
+		mat2.albedo_color = Color(1.0, 0.95, 0.7, 0.18)
+	var fade := clampf(brush_show / 0.7, 0.0, 1.0)   # fades out over the last 0.7 seconds
+	mat2.albedo_color.a *= fade
+	brush_preview.global_position = point
+	brush_preview.scale = Vector3.ONE * r
+	brush_preview.visible = true
+
+func change_brush(amount: float) -> void:
+	brush = clampf(snappedf(brush + amount, 0.1), BRUSH_MIN, ant.stat("dig_max"))
+	brush_show = BRUSH_SHOW_TIME
 
 # Hold X and click to spend carried soil and build ground back up where you aim.
 const FILL_RADIUS := 1.8
@@ -581,13 +749,14 @@ func fill_ground(point: Vector3, aim: Vector3) -> void:
 		dig_cooldown = 0.6
 		return
 	# Center the blob a little in front of the surface so it grows outward from it.
-	var center := point - aim.normalized() * FILL_RADIUS * 0.7
-	if ant.global_position.distance_to(center) < FILL_RADIUS + 0.9 \
-			or (ant.global_position + ant.basis.y * 0.4).distance_to(center) < FILL_RADIUS + 0.9:
+	var fr := FILL_RADIUS * brush / DIG_RADIUS
+	var center := point - aim.normalized() * fr * 0.7
+	if ant.global_position.distance_to(center) < fr + 0.9 \
+			or (ant.global_position + ant.basis.y * 0.4).distance_to(center) < fr + 0.9:
 		show_message("You are in the way. Step back to fill here.")
 		dig_cooldown = 0.6
 		return
-	var dirty := world.fill_sphere(center, FILL_RADIUS)
+	var dirty := world.fill_sphere(center, fr)
 	if dirty.is_empty():
 		return
 	ant.soil = maxf(0.0, ant.soil - world.last_added * SOIL_PER_VOLUME)
@@ -595,8 +764,8 @@ func fill_ground(point: Vector3, aim: Vector3) -> void:
 	dig_cooldown = DIG_INTERVAL
 	mark_edited(dirty)
 	queue_remesh(dirty, center)
-	wake_pickups(center, FILL_RADIUS + 1.0)
-	mark_water_dirty(center, FILL_RADIUS + 1.0)
+	wake_pickups(center, fr + 1.0)
+	mark_water_dirty(center, fr + 1.0)
 
 # Only a thin slab of ground is locked, so water and trees always have something under them.
 # Pools and pockets lock the layer under their water, and trees and boulders lock the ground
@@ -610,8 +779,8 @@ func is_protected(point: Vector3, radius: float) -> bool:
 	var bottom := point.y - radius
 
 	for p in pools_at(point.x, point.z):
-		var reach := float(p["radius"]) * 1.4 + radius
-		if Vector2(point.x - float(p["x"]), point.z - float(p["z"])).length() < reach \
+		var reach := float(p["radius"]) * (1.12 if p.get("lake", false) else 1.4) + radius
+		if pool_dist(p, point.x, point.z) < reach \
 				and top > float(p["floor"]) - POOL_LOCK_DEPTH and bottom < float(p["level0"]) + 0.5:
 			return true
 
@@ -709,6 +878,8 @@ func place_item() -> void:
 		return
 	var p := Placeable.new()
 	p.type = held
+	p.world = world
+	p.moved.connect(_on_placeable_moved)
 	add_child(p)
 	p.global_transform = ghost_xform
 	if held == "queen":
@@ -720,6 +891,11 @@ func place_item() -> void:
 	crafting.consume_held()
 
 var queen_alarm_cd := 0.0
+
+# A placed item fell after the ground under it was dug away. If it is the queen, respawn moves with her.
+func _on_placeable_moved(p: Placeable) -> void:
+	if p == queen:
+		ant.spawn_point = p.global_position + Vector3(0, 2.5, 0)
 
 func _on_queen_attacked() -> void:
 	var now := Time.get_ticks_msec() / 1000.0
@@ -782,6 +958,7 @@ func show_message(text: String) -> void:
 
 # Pressing E opens the nearest box or barrel.
 func _on_deposit() -> void:
+	print("E pressed. queen valid: ", is_instance_valid(queen), "  class menu built: ", class_layer != null)
 	var best: Placeable = null
 	var best_d := 4.5
 	for c in get_tree().get_nodes_in_group("containers"):
@@ -789,8 +966,16 @@ func _on_deposit() -> void:
 		if d < best_d:
 			best_d = d
 			best = c
+	if is_instance_valid(queen) and ant.global_position.distance_to(queen.global_position) < QUEEN_MENU_RANGE \
+			and (best == null or ant.global_position.distance_to(queen.global_position) < best_d):
+		dig_lock = true
+		open_class_menu()
+		return
 	if best == null:
-		show_message("No box or barrel nearby. Craft one with C.")
+		if is_instance_valid(queen):
+			show_message("Too far from your queen (%.1f away, need under %.0f)." % [ant.global_position.distance_to(queen.global_position), QUEEN_MENU_RANGE])
+		else:
+			show_message("No box or barrel nearby, and no queen placed. Press E next to your own queen to change class.")
 		return
 	dig_lock = true
 	storage_ui.open(best)
@@ -845,9 +1030,13 @@ func setup_noise() -> void:
 	temp_noise.seed = 4001
 	temp_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	temp_noise.frequency = BIOME_FREQ
+	temp_noise.fractal_octaves = 2      # Godot's default is 5, which made biomes patchy at every scale
+	temp_noise.fractal_gain = 0.2
 	moist_noise.seed = 4002
 	moist_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	moist_noise.frequency = BIOME_FREQ
+	moist_noise.fractal_octaves = 2
+	moist_noise.fractal_gain = 0.2
 	ridge_noise.seed = 4003
 	ridge_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	ridge_noise.frequency = 0.03
@@ -894,7 +1083,7 @@ func biome_weights(x: float, z: float) -> PackedFloat32Array:
 	var norm := 1.0
 	if total > 1.0:
 		norm = 1.0 / total
-	norm *= smoothstep(26.0, 46.0, Vector2(x - 8.0, z - 8.0).length()) * smoothstep(4.0, 26.0, edge_dist(x, z))
+	norm *= smoothstep(320.0, 560.0, Vector2(x - 8.0, z - 8.0).length()) * smoothstep(4.0, 26.0, edge_dist(x, z))
 	for i in w.size():
 		w[i] *= norm
 	return w
@@ -943,7 +1132,7 @@ func ground_height(x: float, z: float) -> float:
 		var px: float = p["x"]
 		var pz: float = p["z"]
 		var r: float = p["radius"]
-		var d := Vector2(x - px, z - pz).length()
+		var d := pool_dist(p, x, z)
 		if d > r * 1.9:
 			continue
 		var flat := 1.0 - smoothstep(r, r * 1.9, d)
@@ -969,7 +1158,13 @@ func surface_kind(x: float, z: float) -> int:
 		var px: float = p["x"]
 		var pz: float = p["z"]
 		var r: float = p["radius"]
-		var d := Vector2(x - px, z - pz).length()
+		var d := pool_dist(p, x, z)
+		if p.get("lake", false):
+			if d < r * 0.8:
+				return Blocks.MUD     # the lake bed
+			if d < r * 0.87:
+				return Blocks.SAND    # a thin beach, then grass and bushes
+			continue
 		if d < r * 1.1:
 			return Blocks.MUD
 		if d < r * 1.5:
@@ -1006,13 +1201,16 @@ func gen_column_cache(col: Vector2i) -> Dictionary:
 	var ks := PackedInt32Array()
 	hs.resize(size * size)
 	ks.resize(size * size)
+	var top := -1000.0
 	for lx in size:
 		for lz in size:
 			var x := col.x * size + lx
 			var z := col.y * size + lz
-			hs[lx * size + lz] = ground_height(x, z)
+			var gh := ground_height(x, z)
+			hs[lx * size + lz] = gh
 			ks[lx * size + lz] = surface_kind(x, z)
-	return {"h": hs, "k": ks}
+			top = maxf(top, gh)
+	return {"h": hs, "k": ks, "max": top}
 
 # Fills one chunk straight from the height function. Chunks that are all open
 # air are never created, so the empty sky costs nothing.
@@ -1020,6 +1218,12 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 	var size := Chunk.SIZE
 	var origin := cpos * size
 	var near := pockets_near_chunk(cpos)
+	var mound := mounds_near_chunk(cpos)
+	var cones: Array = mound.get("cones", [])
+	var prims: Array = mound.get("prims", [])
+	if cones.is_empty() and float(origin.y) - 1.0 > float(cache["max"]):
+		return   # all open sky
+	var dead_mound: bool = mound.get("dead", false)
 	var chunk: Chunk = null
 	var hs: PackedFloat32Array = cache["h"]
 	var ks: PackedInt32Array = cache["k"]
@@ -1033,6 +1237,12 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 			for ly in size:
 				var y := origin.y + ly
 				var depth := h - y
+				var in_mound := false
+				for cn in cones:
+					var md := cone_depth(cn, x, y, z)
+					if md > depth:
+						depth = md
+						in_mound = true
 				if depth <= -1.0:
 					continue   # open air; a new chunk already starts as air
 				if chunk == null:
@@ -1040,7 +1250,10 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 				var dens := clampf(depth, -1.0, 1.0)
 				var mat := Blocks.AIR
 				if depth > 0.0:
-					mat = soil_at(x, y, z, depth, kind, under)
+					if in_mound:
+						mat = Blocks.DEAD_MOUND if dead_mound else Blocks.MOUND
+					else:
+						mat = soil_at(x, y, z, depth, kind, under)
 
 				# Water pockets: carve a cavity, and stain the earth around it dark and damp.
 				var damp := false
@@ -1054,7 +1267,389 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 				if damp and dens > 0.0:
 					mat = Blocks.MUD
 
+				# Termite tunnels and chambers: carved out, with chewed mound earth for walls.
+				for pr in prims:
+					var sdf2 := prim_sdf(pr, x, y, z)
+					if sdf2 < dens:
+						dens = clampf(sdf2, -1.0, 1.0)
+					if sdf2 < 1.8 and dens > 0.0:
+						mat = Blocks.DEAD_MOUND if dead_mound else Blocks.MOUND
+
 				chunk.set_voxel(lx, ly, lz, dens, mat)
+
+# ---------- Termite mounds ----------
+# The world is split into big squares. Each may hold one mound, decided from the square's own
+# number the first time anything looks there. A mound is a tall tapered tower of mound earth,
+# hollowed out inside by tunnels and chambers, with the queen's cell deep underground.
+# The shapes are worked out here as simple solids and hollows; fill_chunk builds them in.
+
+func mound_at_cell(cell: Vector2i) -> Dictionary:
+	if not mound_cells.has(cell):
+		mound_cells[cell] = gen_mound_cell(cell)
+	return mound_cells[cell]
+
+func mound_near(x: float, z: float) -> Dictionary:
+	return mound_at_cell(Vector2i(floori(x / MOUND_CELL), floori(z / MOUND_CELL)))
+
+# Is this spot on or close to a mound? Used to keep trees, grass and so on off it.
+func near_mound(x: float, z: float, margin: float) -> bool:
+	var m := mound_near(x, z)
+	if m.is_empty():
+		return false
+	return Vector2(x - float(m["x"]), z - float(m["z"])).length() < float(m["R"]) + margin + 6.0
+
+# The mound whose shapes could touch this chunk (a mound always fits inside its own square).
+func mounds_near_chunk(cpos: Vector3i) -> Dictionary:
+	var m := mound_at_cell(Vector2i(floori(float(cpos.x * Chunk.SIZE) / MOUND_CELL), floori(float(cpos.z * Chunk.SIZE) / MOUND_CELL)))
+	if m.is_empty():
+		return {}
+	var lo := Vector3(cpos * Chunk.SIZE)
+	var hi := lo + Vector3.ONE * Chunk.SIZE
+	var cones := []
+	for cn in m["cones"]:
+		if aabb_hits(cn["lo"], cn["hi"], lo, hi):
+			cones.append(cn)
+	var prims := []
+	for pr in m["prims"]:
+		if aabb_hits(pr["lo"], pr["hi"], lo, hi):
+			prims.append(pr)
+	if cones.is_empty() and prims.is_empty():
+		return {}
+	return {"cones": cones, "prims": prims, "dead": m["dead"]}
+
+func aabb_hits(a_lo: Vector3, a_hi: Vector3, b_lo: Vector3, b_hi: Vector3) -> bool:
+	return a_lo.x <= b_hi.x and a_hi.x >= b_lo.x and a_lo.y <= b_hi.y and a_hi.y >= b_lo.y and a_lo.z <= b_hi.z and a_hi.z >= b_lo.z
+
+# How far inside a tapered tower this point is (negative outside, -2 for "not near").
+func cone_depth(cn: Dictionary, x: float, y: float, z: float) -> float:
+	var yr := y - float(cn["y0"])
+	var hh := float(cn["H"])
+	if yr < 0.0 or yr > hh:
+		return -2.0
+	var dx := x - float(cn["x"])
+	var dz := z - float(cn["z"])
+	var rr2 := dx * dx + dz * dz
+	var rmax := float(cn["R"]) * 1.12
+	if rr2 > rmax * rmax:
+		return -2.0
+	var t := 1.0 - yr / hh
+	var rad := float(cn["R"]) * pow(t, 0.7) * (1.0 + 0.08 * sin(0.45 * x + 0.35 * z + yr * 0.12))
+	return rad - sqrt(rr2)
+
+# Distance to a hollow (negative inside it): an egg-shaped chamber or a round tunnel.
+func prim_sdf(p: Dictionary, x: float, y: float, z: float) -> float:
+	var c: Vector3 = p["c"]
+	if int(p["t"]) == 0:
+		var r: Vector3 = p["r"]
+		var q := Vector3((x - c.x) / r.x, (y - c.y) / r.y, (z - c.z) / r.z)
+		return (q.length() - 1.0) * float(p["rmin"])
+	var b: Vector3 = p["b"]
+	var pa := Vector3(x, y, z) - c
+	var ba := b - c
+	var h := clampf(pa.dot(ba) / float(p["len2"]), 0.0, 1.0)
+	return (pa - ba * h).length() - float(p["rad"])
+
+func make_chamber(c: Vector3, r: Vector3) -> Dictionary:
+	var pad := 4.0
+	return {"t": 0, "c": c, "r": r, "rmin": minf(r.x, minf(r.y, r.z)),
+		"lo": c - r - Vector3.ONE * pad, "hi": c + r + Vector3.ONE * pad}
+
+func make_tunnel(a: Vector3, b: Vector3, rad: float) -> Dictionary:
+	var pad := rad + 3.0
+	return {"t": 1, "c": a, "b": b, "rad": rad, "len2": maxf(a.distance_squared_to(b), 0.001),
+		"lo": Vector3(minf(a.x, b.x), minf(a.y, b.y), minf(a.z, b.z)) - Vector3.ONE * pad,
+		"hi": Vector3(maxf(a.x, b.x), maxf(a.y, b.y), maxf(a.z, b.z)) + Vector3.ONE * pad}
+
+func make_cone(x: float, z: float, y0: float, rad: float, height: float) -> Dictionary:
+	return {"x": x, "z": z, "y0": y0, "R": rad, "H": height,
+		"lo": Vector3(x - rad * 1.2, y0 - 1.0, z - rad * 1.2), "hi": Vector3(x + rad * 1.2, y0 + height + 1.0, z + rad * 1.2)}
+
+func gen_mound_cell(cell: Vector2i) -> Dictionary:
+	var rng := cell_rng(cell, 9090)
+	var origin := Vector2(cell) * float(MOUND_CELL)
+	# One roll decides whether this square has a mound: unlikely near the start, likelier far out.
+	var x := origin.x + rng.randf_range(64.0, MOUND_CELL - 64.0)
+	var z := origin.y + rng.randf_range(64.0, MOUND_CELL - 64.0)
+	var chance := float(MOUND_CHANCE[biome_at(x, z)]) * smoothstep(MOUND_START_CLEAR, 400.0, Vector2(x, z).length())
+	if rng.randf() > chance:
+		return {}
+	var rad := 0.0
+	var gh := 0.0
+	var found := false
+	for t in 8:
+		x = origin.x + rng.randf_range(64.0, MOUND_CELL - 64.0)
+		z = origin.y + rng.randf_range(64.0, MOUND_CELL - 64.0)
+		rad = rng.randf_range(15.0, 25.0)
+		if edge_dist(x, z) < 140.0:
+			continue
+		var wet := false
+		for p in pools_at(x, z):
+			if Vector2(x - float(p["x"]), z - float(p["z"])).length() < float(p["radius"]) * 1.5 + rad + 12.0:
+				wet = true
+		if wet:
+			continue
+		gh = ground_height(x, z)
+		if gh < 40.0 or gh > 54.0:
+			continue
+		var flat := true
+		for off in [Vector2(rad, 0), Vector2(-rad, 0), Vector2(0, rad), Vector2(0, -rad)]:
+			if absf(ground_height(x + off.x, z + off.y) - gh) > 4.0:
+				flat = false
+		if flat:
+			found = true
+			break
+	if not found:
+		return {}
+
+	var height := minf(rng.randf_range(34.0, 52.0), 100.0 - gh)
+	var y0 := gh - 8.0   # the base is buried, so the mound grows out of the ground
+	var cones := [make_cone(x, z, y0, rad, height)]
+	for i in rng.randi_range(2, 5):   # a few smaller spires leaning against the main tower
+		var a := rng.randf() * TAU
+		cones.append(make_cone(x + cos(a) * rad * rng.randf_range(0.5, 0.75), z + sin(a) * rad * rng.randf_range(0.5, 0.75), y0,
+				rad * rng.randf_range(0.3, 0.5), height * rng.randf_range(0.4, 0.75)))
+
+	# The layout inside. Every mound is different: how deep it goes, how far it spreads, how many
+	# rooms it has, and how they join. Rooms sit on several levels. They are linked by winding
+	# tunnels, with side loops and dead ends. The queen's cell is on the deepest level, far from
+	# the entrance, and reached only through a guarded antechamber.
+	var levels := rng.randi_range(5, 6)
+	var ly := []
+	for i in levels:
+		ly.append(gh + 2.5 - i * 6.5)
+	var spread := rng.randf_range(30.0, 44.0)
+	var a0 := rng.randf() * TAU
+	var dir0 := Vector2(cos(a0), sin(a0))
+	var eo2 := Vector2(x, z) + dir0 * (rad + 4.0)
+	var ei2 := Vector2(x, z) + dir0 * (rad * 0.45)
+	var eo := Vector3(eo2.x, ground_height(eo2.x, eo2.y) + 1.5, eo2.y)
+	var ei := Vector3(ei2.x, gh + 1.5, ei2.y)
+
+	var chambers := []   # each: {"c", "r", "lvl", "role"}
+	var edges := []      # pairs of chamber indexes joined by a tunnel
+	var prims := []
+	var hall_r := Vector3(rng.randf_range(5.5, 7.5), 4.5, rng.randf_range(5.5, 7.5))
+	chambers.append({"c": Vector3(x, ly[0], z), "r": hall_r, "lvl": 0, "role": "hall"})
+	prims.append(make_tunnel(eo, ei, 2.4))                                     # the door
+	prims.append(make_tunnel(ei, Vector3(x, ly[0], z), 2.2))
+	prims.append(make_chamber(chambers[0]["c"], hall_r))
+
+	# The royal cell: deepest level, far to one side. Placed first so nothing crowds it.
+	var aq := rng.randf() * TAU
+	var royal_r := Vector3(8.5, 4.2, 7.0)
+	var qc := Vector3(x + cos(aq) * spread * rng.randf_range(0.8, 1.0), ly[levels - 1], z + sin(aq) * spread * rng.randf_range(0.8, 1.0))
+	chambers.append({"c": qc, "r": royal_r, "lvl": levels - 1, "role": "royal"})
+	var royal_i := 1
+	prims.append(make_chamber(qc, royal_r))
+
+	# Its antechamber, where the guards wait.
+	var ante_i := -1
+	var to_center := (Vector3(x, qc.y, z) - qc).normalized()
+	for t in 16:
+		var rot := to_center.rotated(Vector3.UP, rng.randf_range(-1.4, 1.4))
+		var ap := qc + rot * 17.0
+		var ar := Vector3(4.4, 3.0, 4.4)
+		if mound_place(chambers, ap, ar, 3.0):
+			chambers.append({"c": ap, "r": ar, "lvl": levels - 1, "role": "antechamber"})
+			ante_i = chambers.size() - 1
+			prims.append(make_chamber(ap, ar))
+			break
+	if ante_i < 0:   # very unlikely: put it straight toward the center
+		var ap2 := qc + to_center * 17.0
+		chambers.append({"c": ap2, "r": Vector3(4.4, 3.0, 4.4), "lvl": levels - 1, "role": "antechamber"})
+		ante_i = chambers.size() - 1
+		prims.append(make_chamber(ap2, Vector3(4.4, 3.0, 4.4)))
+
+	# Rooms inside the tower itself, around the great hall.
+	var galleries := rng.randi_range(3, 4)
+	for i in galleries:
+		for t in 20:
+			var ga := rng.randf() * TAU
+			var gd := rad * rng.randf_range(0.3, 0.45)
+			var gr := Vector3(rng.randf_range(3.2, 4.4), 3.0, rng.randf_range(3.2, 4.4))
+			var gp := Vector3(x + cos(ga) * gd, ly[0] + rng.randf_range(-0.5, 2.0), z + sin(ga) * gd)
+			if mound_place(chambers, gp, gr, 2.0):
+				chambers.append({"c": gp, "r": gr, "lvl": 0, "role": "larder" if i == 0 else "sleep"})
+				prims.append(make_chamber(gp, gr))
+				break
+	# Rooms on the lower levels.
+	var roles := ["nursery", "sleep", "fungus", "store", "empty", "nursery"]
+	for lvl in range(1, levels):
+		for i in rng.randi_range(3, 5):
+			for t in 30:
+				var ra := rng.randf() * TAU
+				var rd := rng.randf_range(8.0, spread)
+				var rr := Vector3(rng.randf_range(3.2, 5.2), rng.randf_range(2.6, 3.4), rng.randf_range(3.2, 5.2))
+				var rp := Vector3(x + cos(ra) * rd, ly[lvl] + rng.randf_range(-1.0, 1.0), z + sin(ra) * rd)
+				if mound_place(chambers, rp, rr, 3.0):
+					chambers.append({"c": rp, "r": rr, "lvl": lvl, "role": roles[rng.randi() % roles.size()]})
+					prims.append(make_chamber(rp, rr))
+					break
+
+	# Join them: each room links to the nearest room already joined, on its own level or next to it.
+	var avoid_c := qc
+	var avoid_r := royal_r * 1.25
+	var joined := [0]
+	var order := []
+	for i in chambers.size():
+		if i != 0 and i != royal_i:
+			order.append(i)
+	order.sort_custom(func(a: int, b: int) -> bool:
+		var ca: Dictionary = chambers[a]
+		var cb: Dictionary = chambers[b]
+		if int(ca["lvl"]) != int(cb["lvl"]):
+			return int(ca["lvl"]) < int(cb["lvl"])
+		return Vector2((ca["c"] as Vector3).x - x, (ca["c"] as Vector3).z - z).length() < Vector2((cb["c"] as Vector3).x - x, (cb["c"] as Vector3).z - z).length())
+	for i in order:
+		var ci: Dictionary = chambers[i]
+		# Nearest joined room, strongly preferring the same or the next level, so the way down is a chain.
+		var cands := joined.duplicate()
+		cands.sort_custom(func(a: int, b: int) -> bool:
+			var pa := (chambers[a]["c"] as Vector3).distance_to(ci["c"]) + 40.0 * maxf(0.0, absf(float(chambers[a]["lvl"]) - float(ci["lvl"])) - 1.0)
+			var pb := (chambers[b]["c"] as Vector3).distance_to(ci["c"]) + 40.0 * maxf(0.0, absf(float(chambers[b]["lvl"]) - float(ci["lvl"])) - 1.0)
+			return pa < pb)
+		var best := -1
+		var best_pts := []
+		for j in cands:
+			var pts := mound_path(chambers[j]["c"], ci["c"], rng)
+			if i == ante_i or mound_path_clear(pts, avoid_c, avoid_r):
+				best = j
+				best_pts = pts
+				break
+		if best < 0:
+			best = cands[0]
+			best_pts = mound_path(chambers[best]["c"], ci["c"], rng)
+		mound_add_path(prims, best_pts, rng.randf_range(1.7, 2.1))
+		edges.append([best, i])
+		joined.append(i)
+	# The only way into the royal cell is from its antechamber.
+	mound_add_path(prims, mound_path(chambers[ante_i]["c"], qc, rng), 2.1)
+	edges.append([ante_i, royal_i])
+
+	# A few extra loops, so there is more than one way around.
+	for t in 6:
+		var i2 := rng.randi_range(0, chambers.size() - 1)
+		var j2 := rng.randi_range(0, chambers.size() - 1)
+		if i2 == j2 or i2 == royal_i or j2 == royal_i:
+			continue
+		if absi(int(chambers[i2]["lvl"]) - int(chambers[j2]["lvl"])) > 1:
+			continue
+		if (chambers[i2]["c"] as Vector3).distance_to(chambers[j2]["c"]) > 26.0:
+			continue
+		var pts2 := mound_path(chambers[i2]["c"], chambers[j2]["c"], rng)
+		if mound_path_clear(pts2, avoid_c, avoid_r):
+			mound_add_path(prims, pts2, 1.6)
+			edges.append([i2, j2])
+
+	# Dead ends: tunnels that wander off and stop, some with a little room at the end.
+	for t in rng.randi_range(4, 8):
+		var di := rng.randi_range(0, chambers.size() - 1)
+		if di == royal_i or di == ante_i:
+			continue
+		var dc: Vector3 = chambers[di]["c"]
+		var da := rng.randf() * TAU
+		var dl := rng.randf_range(7.0, 14.0)
+		var de := dc + Vector3(cos(da) * dl, rng.randf_range(-2.0, 1.5), sin(da) * dl)
+		if Vector2(de.x - x, de.z - z).length() > spread + 6.0:
+			continue
+		var dpts := mound_path(dc, de, rng)
+		if not mound_path_clear(dpts, avoid_c, avoid_r):
+			continue
+		mound_add_path(prims, dpts, 1.4)
+		if rng.randf() < 0.6:
+			var er := Vector3(rng.randf_range(2.2, 3.2), 2.2, rng.randf_range(2.2, 3.2))
+			if mound_place(chambers, de, er, 1.5):
+				chambers.append({"c": de, "r": er, "lvl": int(chambers[di]["lvl"]), "role": "empty"})
+				prims.append(make_chamber(de, er))
+
+	# Chimneys: air shafts rising through the tower.
+	for i in rng.randi_range(1, 3):
+		var ca := rng.randf() * TAU
+		var cx2 := x + cos(ca) * rad * 0.22
+		var cz2 := z + sin(ca) * rad * 0.22
+		prims.append(make_tunnel(Vector3(x, ly[0], z), Vector3(cx2, ly[0] + 3.0, cz2), 1.5))
+		prims.append(make_tunnel(Vector3(cx2, ly[0] + 3.0, cz2), Vector3(cx2, gh + height * rng.randf_range(0.5, 0.72), cz2), 1.5))
+
+	# Pick out the rooms the colony uses.
+	var hall: Vector3 = chambers[0]["c"]
+	var larder := hall
+	var sleepers := []
+	var nurseries := []
+	var posts := [ei, mound_floor(chambers[0])]
+	for i in chambers.size():
+		var chm: Dictionary = chambers[i]
+		match String(chm["role"]):
+			"larder":
+				larder = chm["c"]
+			"sleep":
+				sleepers.append(chm["c"])
+			"nursery":
+				nurseries.append(chm["c"])
+	posts.append(mound_floor(chambers[ante_i]))
+	posts.append(Vector3(qc.x + 4.5, qc.y - 3.9, qc.z))
+	posts.append(Vector3(qc.x - 4.5, qc.y - 3.9, qc.z + 2.0))
+	for k in 3:   # guards in random rooms on the way down
+		if chambers.size() > 4:
+			posts.append(mound_floor(chambers[rng.randi_range(2, chambers.size() - 1)]))
+
+	return {
+		"kind": "mound", "x": x, "z": z, "gh": gh, "R": rad, "H": height,
+		"center": Vector3(x, gh, z), "cones": cones, "prims": prims,
+		"alive": true, "dead": false, "alerted": false,
+		"stock": {"sugar": 0, "pebble": 0, "fiber": 0},
+		"workers": 0, "soldiers": 0, "alarm_until": 0.0,
+		"entrance_out": eo, "entrance_in": ei, "hall": hall, "larder": larder,
+		"queen_pos": Vector3(qc.x, qc.y - 3.9, qc.z), "royal": qc,
+		"nurseries": nurseries, "sleepers": sleepers, "posts": posts,
+	}
+
+# True when a new room at c with radii r fits without touching the rooms already there.
+func mound_place(chambers: Array, c: Vector3, r: Vector3, gap: float) -> bool:
+	for o in chambers:
+		var oc: Vector3 = o["c"]
+		var orr: Vector3 = o["r"]
+		var dxz := Vector2(c.x - oc.x, c.z - oc.z).length()
+		var reach := maxf(r.x, r.z) + maxf(orr.x, orr.z) + gap
+		if dxz < reach and absf(c.y - oc.y) < r.y + orr.y + 2.0:
+			return false
+	return true
+
+# A winding route between two points: a few waypoints pushed sideways, so tunnels curve.
+func mound_path(a: Vector3, b: Vector3, rng: RandomNumberGenerator) -> Array:
+	var pts := [a]
+	var dist := a.distance_to(b)
+	var n := clampi(int(dist / 8.0), 2, 5)
+	var d := b - a
+	var side := Vector3(-d.z, 0.0, d.x).normalized()
+	for i in range(1, n):
+		var t := float(i) / float(n)
+		var p := a.lerp(b, t) + side * rng.randf_range(-0.22, 0.22) * dist
+		p.y += rng.randf_range(-1.2, 1.2)
+		pts.append(p)
+	pts.append(b)
+	return pts
+
+# True when no part of the route runs through the protected ellipsoid (the royal cell's surroundings).
+func mound_path_clear(pts: Array, c: Vector3, r: Vector3) -> bool:
+	for i in pts.size() - 1:
+		var a: Vector3 = pts[i]
+		var b: Vector3 = pts[i + 1]
+		for k in 7:
+			var p := a.lerp(b, float(k) / 6.0)
+			var q := Vector3((p.x - c.x) / r.x, (p.y - c.y) / r.y, (p.z - c.z) / r.z)
+			if q.length() < 1.0:
+				return false
+	return true
+
+func mound_add_path(prims: Array, pts: Array, rad: float) -> void:
+	for i in pts.size() - 1:
+		prims.append(make_tunnel(pts[i], pts[i + 1], rad))
+
+# Where something standing in a room stands: just above its floor.
+func mound_floor(chm: Dictionary) -> Vector3:
+	var c: Vector3 = chm["c"]
+	var r: Vector3 = chm["r"]
+	return Vector3(c.x, c.y - r.y + 1.2, c.z)
 
 # What the earth is made of at one point. Mostly layered, with random pockets
 # of other kinds, so no stretch of ground is the same all the way through.
@@ -1095,19 +1690,107 @@ func cell_rng(cell: Vector2i, salt: int) -> RandomNumberGenerator:
 	rng.seed = hash(Vector3i(cell.x, cell.y, salt))
 	return rng
 
+# How far out a lake reaches in a direction, as a share of its radius (0.68 to 1.0). Each lake has
+# its own mix of lobes, so no two share a shape.
+func lake_reach(p: Dictionary, angle: float) -> float:
+	var w: PackedFloat32Array = p["wob"]
+	var h := 0.0
+	for k in 6:
+		h += w[k * 2] * cos(float(k + 1) * (angle - w[k * 2 + 1]))
+	return 0.35 + 0.65 * clampf((h - w[12]) / maxf(w[13] - w[12], 0.001), 0.0, 1.0)
+
+# A random lake outline: six waves of different counts, stretched so the lake's shortest reach is
+# 35% of its radius and its longest is 100%. That gives bays, fingers and peninsulas.
+func make_lake_wobble(rng: RandomNumberGenerator) -> PackedFloat32Array:
+	var w := PackedFloat32Array()
+	for k in 6:
+		w.append(rng.randf_range(0.4, 1.0) / (1.0 + 0.35 * float(k)))
+		w.append(rng.randf_range(0.0, TAU))
+	var lo := 1e9
+	var hi := -1e9
+	for i in 90:
+		var a := TAU * float(i) / 90.0
+		var h := 0.0
+		for k in 6:
+			h += w[k * 2] * cos(float(k + 1) * (a - w[k * 2 + 1]))
+		lo = minf(lo, h)
+		hi = maxf(hi, h)
+	w.append(lo)
+	w.append(hi)
+	return w
+
+# Distance from a pool's middle, stretched so a lake's odd outline counts as a circle of its radius.
+func pool_dist(p: Dictionary, x: float, z: float) -> float:
+	var dx := x - float(p["x"])
+	var dz := z - float(p["z"])
+	var d := sqrt(dx * dx + dz * dz)
+	if not p.get("lake", false):
+		return d
+	return d / lake_reach(p, atan2(dz, dx))
+
+func lake_outline(p: Dictionary) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for i in 48:
+		var a := TAU * float(i) / 48.0
+		var rr := float(p["radius"]) * lake_reach(p, a)
+		pts.append(Vector2(float(p["x"]) + cos(a) * rr, float(p["z"]) + sin(a) * rr))
+	return pts
+
 func pools_at(x: float, z: float) -> Array:
 	var cell := Vector2i(floori(x / POOL_CELL), floori(z / POOL_CELL))
 	if not pool_cells.has(cell):
 		gen_pool_cell(cell)
 	return pool_cells[cell]
 
+# A big, deep forest lake with grassy banks. The square holding the start always gets one, a short walk away.
+# It has to sit well inside its square, because ground_height() only looks at the square's own water.
+func try_lake(cell: Vector2i, origin: Vector2, list: Array) -> bool:
+	var rng := cell_rng(cell, 4242)
+	var is_start := cell == Vector2i(0, 0)
+	if not is_start and rng.randf() > LAKE_CHANCE:
+		return false
+	for t in 10:
+		var radius := rng.randf_range(50.0, 60.0)
+		var margin := radius * 1.9 + 4.0
+		if margin > POOL_CELL * 0.5 - 6.0:
+			radius = (POOL_CELL * 0.5 - 10.0 - 4.0) / 1.9
+			margin = radius * 1.9 + 4.0
+		var x := origin.x + rng.randf_range(margin, POOL_CELL - margin)
+		var z := origin.y + rng.randf_range(margin, POOL_CELL - margin)
+		if edge_dist(x, z) < RIVER_WIDTH + radius * 1.9 + 10.0:
+			continue
+		if Vector2(x, z).distance_to(STORAGE_XZ) < radius * 1.5 + 60.0:
+			continue
+		var wb := biome_weights(x, z)
+		var wet_total := wb[0] + wb[1] + wb[2] + wb[3] + wb[4]
+		if wet_total > 0.5 and not (is_start and t >= 6):
+			continue   # lakes belong in the forest (the start square falls back to any biome after a few tries)
+		var depth := rng.randf_range(7.0, 9.5)
+		var rim := base_height(x, z)
+		var bound := radius * 1.12 + 2.0   # the water never reaches past the radius, and the ground around it has to be loaded to draw it
+		var p := {
+			"kind": "pool", "lake": true, "x": x, "z": z, "radius": radius, "depth": depth, "rim": rim,
+			"wob": make_lake_wobble(rng),
+			"stock": radius * radius * 10.0, "stock_max": radius * radius * 10.0,
+			"floor": rim - depth,
+			"level0": rim - 0.25 * depth,
+			"bound": Vector2(bound, bound), "seed": Vector2(x, z),
+			"built": false, "dirty": false,
+		}
+		list.append(p)
+		unbuilt_water.append(p)
+		return true
+	return false
+
 func gen_pool_cell(cell: Vector2i) -> void:
 	var list := []
 	pool_cells[cell] = list
 	var rng := cell_rng(cell, 777)
+	var origin := Vector2(cell) * float(POOL_CELL)
+	if try_lake(cell, origin, list):
+		return
 	if rng.randf() > POOL_CHANCE:
 		return
-	var origin := Vector2(cell) * float(POOL_CELL)
 	for t in 8:
 		var x := origin.x + rng.randf_range(30.0, POOL_CELL - 30.0)   # always well inside its square
 		var z := origin.y + rng.randf_range(30.0, POOL_CELL - 30.0)
@@ -1144,7 +1827,10 @@ func near_pool(x: float, z: float, factor: float = 1.3) -> bool:
 		var px: float = p["x"]
 		var pz: float = p["z"]
 		var r: float = p["radius"]
-		if Vector2(x - px, z - pz).length() < r * factor:
+		var f := factor
+		if p.get("lake", false):
+			f = 1.0 + (factor - 1.0) * 0.25   # a big lake only needs a thin margin kept clear, so its banks can be planted
+		if pool_dist(p, x, z) < r * f:
 			return true
 	return false
 
@@ -1457,7 +2143,7 @@ func find_water_source() -> Dictionary:
 			continue
 		match p["kind"]:
 			"pool":
-				var d := Vector2(a.x - float(p["x"]), a.z - float(p["z"])).length()
+				var d := pool_dist(p, a.x, a.z)
 				var rim: float = p["rim"]
 				if d < float(p["radius"]) * 0.7 + 1.5 and a.y < rim + 2.5 and a.y > rim - float(p["depth"]) - 2.0:
 					return p
@@ -1479,10 +2165,10 @@ func handle_water(delta: float) -> void:
 		return
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED or crafting.is_open or storage_ui.is_open or not Input.is_key_pressed(KEY_F):
 		return
-	if ant.water >= Ant.WATER_CAPACITY - 0.01:
+	if ant.water >= ant.water_cap() - 0.01:
 		show_message("Your water bar is full.")
 		return
-	var amount := minf(DRINK_RATE * delta, minf(Ant.WATER_CAPACITY - ant.water, float(water_source["stock"])))
+	var amount := minf(DRINK_RATE * delta, minf(ant.water_cap() - ant.water, float(water_source["stock"])))
 	ant.water += amount
 	water_source["stock"] = float(water_source["stock"]) - amount
 	water_source["dirty"] = true
@@ -1492,6 +2178,11 @@ func handle_water(delta: float) -> void:
 func setup_terrain_material() -> void:
 	material.vertex_color_use_as_albedo = true
 	material.roughness = 1.0
+	# The detailed ground melts away into the distant land with a fine dither, so it never pops in.
+	# (Max is smaller than min on purpose: fully solid up to max, fully gone at min.)
+	material.distance_fade_mode = BaseMaterial3D.DISTANCE_FADE_PIXEL_DITHER
+	material.distance_fade_max_distance = TERRAIN_FADE_START
+	material.distance_fade_min_distance = TERRAIN_FADE_END
 
 	# Fine grain and bumps projected from all sides, so the ground isn't smooth plastic.
 	var grain := FastNoiseLite.new()
@@ -1531,7 +2222,66 @@ func create_storage() -> void:
 
 # ---------- Day and night ----------
 
+const MIN_DARK := 0.015        # how much sky light is left in total darkness (0 = pitch black)
+const HEADLAMP_ENERGY := 0.5   # your own glow, so you can see a little when it is dark. 0 removes it.
+
+var openness := 1.0            # 1 = open sky above you, 0 = buried
+var openness_target := 1.0
+var cover_timer := 0.0
+var headlamp: OmniLight3D
+
+func setup_headlamp() -> void:
+	headlamp = OmniLight3D.new()
+	headlamp.light_color = Color(1.0, 0.85, 0.6)
+	headlamp.omni_range = 18.0
+	headlamp.omni_attenuation = 1.4
+	headlamp.shadow_enabled = true
+	headlamp.shadow_bias = 0.08          # stops the dark flecks that shadows can leave on nearby walls
+	headlamp.shadow_normal_bias = 2.0
+	headlamp.light_energy = 0.0
+	headlamp.visible = false
+	ant.camera.add_child(headlamp)
+	headlamp.position = Vector3(0, 0.3, -0.6)
+
+# Checks how much solid ground is over your head: one ray straight up and four slanted ones.
+func update_cover(delta: float) -> void:
+	cover_timer -= delta
+	if cover_timer <= 0.0:
+		cover_timer = 0.15
+		var o := ant.camera.global_position
+		var open := 0
+		var dirs := [Vector3.UP, Vector3(1, 1.2, 0), Vector3(-1, 1.2, 0), Vector3(0, 1.2, 1), Vector3(0, 1.2, -1)]
+		for d in dirs:
+			if world.raycast(o, d, 45.0, 1.0) == null:
+				open += 1
+		openness_target = float(open) / float(dirs.size())
+	openness = move_toward(openness, openness_target, delta * 2.0)
+
+
 # Moves the sun, recolors the sky, and sends fireflies out at dusk.
+# Morning mist: thick at dawn, thin by midday, a little at dusk. Swamps and forests get the most.
+# With VOLUMETRIC_MIST on, the mist also catches the low sun and shows light shafts between trees.
+const VOLUMETRIC_MIST := true
+const MIST_BY_BIOME := [0.8, 0.1, 0.7, 0.5, 1.0, 0.35]   # forest, desert, highlands, tundra, swamp, savanna
+var mist_now := 0.0
+
+const MOON_ENERGY := 0.6   # how bright the moon is. Raise for brighter nights.
+
+func update_mist(delta: float, h: float, phase: float) -> void:
+	var low_sun := 1.0 - smoothstep(0.0, 0.4, absf(h))
+	var morning := 1.0 if cos(phase) > 0.0 else 0.3
+	var target := low_sun * morning * float(MIST_BY_BIOME[clampi(current_biome, 0, 5)]) * openness
+	mist_now = lerpf(mist_now, target, minf(1.0, delta * 0.5))
+	if "fog_depth_end" in env:
+		env.set("fog_depth_end", lerpf(FOG_FULL_AT, FOG_FULL_AT * 0.4, mist_now))
+	env.fog_light_color = env.fog_light_color.lerp(Color(0.85, 0.85, 0.82), mist_now * 0.5)
+	if VOLUMETRIC_MIST and "volumetric_fog_enabled" in env:
+		env.set("volumetric_fog_enabled", mist_now > 0.05)
+		env.set("volumetric_fog_density", 0.012 * mist_now)
+		env.set("volumetric_fog_albedo", Color(0.9, 0.88, 0.8))
+		env.set("volumetric_fog_length", 90.0)
+		env.set("volumetric_fog_anisotropy", 0.6)
+
 func update_daynight(delta: float) -> void:
 	day_time += delta / DAY_LENGTH
 	if day_time >= 1.0:
@@ -1550,15 +2300,30 @@ func update_daynight(delta: float) -> void:
 	sky_mat.ground_bottom_color = Color(0.02, 0.03, 0.03).lerp(Color(0.3, 0.35, 0.3), day)
 	biome_tint = biome_tint.lerp(biome_tint_target, minf(1.0, delta * 0.8))
 	env.fog_light_color = horizon * biome_tint
-	env.ambient_light_energy = lerpf(0.2, 0.75, day)
-	env.ambient_light_color = Color(0.4, 0.45, 0.65).lerp(Color(0.82, 0.82, 0.78), day)   # neutral by day, so shade stays grey, not blue
+	sky_life.moon_dir = moon.global_transform.basis.z
+	sky_life.update(delta, ant.camera.global_position, horizon * biome_tint, day, warm, current_biome, openness)
+	env.ambient_light_energy = lerpf(0.3, 0.75, day)
+	env.ambient_light_color = Color(0.3, 0.4, 0.7).lerp(Color(0.82, 0.82, 0.78), day)   # neutral by day, so shade stays grey, not blue
 
 	sun.rotation_degrees = Vector3(-rad_to_deg(phase), -30.0, 0.0)
 	sun.light_energy = 1.3 * smoothstep(-0.02, 0.25, h)
+	update_mist(delta, h, phase)
 	sun.light_color = Color(1.0, 0.95, 0.85).lerp(Color(1.0, 0.6, 0.3), warm) * biome_tint
 	sun.shadow_enabled = h > 0.02
 	moon.rotation_degrees = Vector3(-rad_to_deg(phase) + 180.0, -30.0, 0.0)
-	moon.light_energy = 0.25 * smoothstep(0.0, 0.3, -h)
+	moon.light_energy = MOON_ENERGY * smoothstep(0.0, 0.3, -h)
+	moon.shadow_enabled = h < -0.05   # moonlight casts shadows too, so the night has shape
+	env.glow_intensity = lerpf(1.0, 0.6, day)                 # emissive things (glow mushrooms, fireflies) bloom more at night
+	env.glow_hdr_threshold = lerpf(0.7, 1.0, day)
+
+	# Underground it is dark: the sky's light only reaches you in proportion to how open the sky is above you.
+	var lit := lerpf(MIN_DARK, 1.0, openness * openness)   # squared, so even a little cover darkens quickly
+	env.ambient_light_energy *= lit
+	env.fog_light_color *= lerpf(0.15, 1.0, openness)
+	sun.light_energy *= openness
+	moon.light_energy *= openness
+	headlamp.light_energy = HEADLAMP_ENERGY * (1.0 - openness)
+	headlamp.visible = openness < 0.97
 
 	# Fireflies come out as the light fades, and go to sleep at dawn.
 	var night := day < 0.45
@@ -1567,6 +2332,8 @@ func update_daynight(delta: float) -> void:
 		for c in get_tree().get_nodes_in_group("creatures"):
 			if (c as Creature).nocturnal:
 				(c as Creature).set_active(night)
+			elif (c as Creature).diurnal:
+				(c as Creature).set_active(not night)
 
 # ---------- Acid spray and creatures ----------
 
@@ -1622,8 +2389,146 @@ func handle_spray(delta: float) -> void:
 		var d := to_c.length()
 		if not (c as Creature).active:
 			continue
-		if d < SPRAY_RANGE and d > 0.01 and to_c.normalized().dot(aim) > 0.88:
-			(c as Creature).take_damage(SPRAY_DPS * delta)
+		if d < SPRAY_RANGE * ant.stat("spray_range") and d > 0.01 and to_c.normalized().dot(aim) > minf(0.96, 0.88 + 0.04 * (ant.stat("spray_range") - 1.0)):
+			(c as Creature).take_damage(SPRAY_DPS * ant.stat("spray_dmg") * delta)
+
+# ---------- Ant classes ----------
+# Press E next to your queen to pick a class. Worker: fast, carries a lot. Soldier: tough,
+# strong long acid spray, carries only soil and water, and turns soil into rocks to throw.
+
+func open_class_menu() -> void:
+	refresh_class_menu()
+	class_layer.visible = true
+	class_menu_open = true
+	class_open_frame = Engine.get_process_frames()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+func close_class_menu() -> void:
+	class_menu_open = false
+	dig_lock = true
+	if class_layer != null:
+		class_layer.visible = false
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func update_class_menu() -> void:
+	if class_menu_open and (not is_instance_valid(queen) or ant.global_position.distance_to(queen.global_position) > QUEEN_MENU_RANGE + 2.0):
+		close_class_menu()
+
+func build_class_menu() -> void:
+	class_layer = CanvasLayer.new()
+	class_layer.layer = 6
+	class_layer.visible = false
+	add_child(class_layer)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	class_layer.add_child(center)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(580, 0)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.06, 0.05, 0.95)
+	style.set_corner_radius_all(8)
+	style.set_content_margin_all(18)
+	panel.add_theme_stylebox_override("panel", style)
+	center.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+	var title := Label.new()
+	title.text = "Your queen can change what kind of ant you are"
+	title.add_theme_font_size_override("font_size", 20)
+	box.add_child(title)
+	var descs := [
+		"WORKER  [1]\nQuickest ant. Carries a lot of every resource and picks things up from further away. Average acid spray.",
+		"SOLDIER  [2]\nTougher, with a longer health bar and a powerful long acid spray. Carries only soil and water, eats sugar on the spot. Press Y to turn soil into rocks, V to throw them.",
+	]
+	class_buttons.clear()
+	for i in 2:
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(540, 96)
+		b.pressed.connect(choose_role.bind(i))
+		var l := Label.new()
+		l.text = descs[i]
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		l.set_anchors_preset(Control.PRESET_FULL_RECT)
+		l.offset_left = 12.0
+		l.offset_right = -12.0
+		l.offset_top = 8.0
+		l.offset_bottom = -8.0
+		l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		b.add_child(l)
+		box.add_child(b)
+		class_buttons.append(b)
+	var hint := Label.new()
+	hint.text = "Anything your new class cannot carry is dropped next to you. Press E or Esc to close."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.custom_minimum_size = Vector2(540, 0)
+	hint.add_theme_font_size_override("font_size", 13)
+	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	box.add_child(hint)
+
+func refresh_class_menu() -> void:
+	for i in class_buttons.size():
+		var b := class_buttons[i] as Button
+		b.disabled = (i == ant.role)   # the class you already are is greyed out
+
+func choose_role(i: int) -> void:
+	if i == ant.role:
+		return
+	var overflow := ant.set_role(i)
+	var dropped := 0
+	for k in overflow:
+		var n := int(overflow[k])
+		if n <= 0:
+			continue
+		dropped += n
+		var p := Pickup.new()
+		p.kind = k
+		p.amount = n
+		add_child(p)
+		p.global_position = ant.global_position + Vector3(randf_range(-1.5, 1.5), 0.6, randf_range(-1.5, 1.5))
+	apply_spray_role()
+	brush = minf(brush, ant.stat("dig_max"))
+	var msg := "You are now a %s ant." % Ant.ROLE_NAMES[i]
+	if dropped > 0:
+		msg += " You dropped %d items you cannot carry." % dropped
+	show_message(msg)
+	close_class_menu()
+
+# Longer range for soldiers: the drops fly faster and live longer.
+func apply_spray_role() -> void:
+	var m: float = ant.stat("spray_range")
+	spray.initial_velocity_min = 13.0 * m
+	spray.initial_velocity_max = 17.0 * m
+	spray.lifetime = 0.45 * (1.0 + 0.35 * (m - 1.0))
+
+func convert_soil_to_rock() -> void:
+	if ant.role != 1 or build_mode or ant.controls_locked:
+		return
+	if ant.rocks >= Ant.ROCK_CAP:
+		show_message("You cannot carry more rocks.")
+	elif ant.soil < SOIL_PER_ROCK:
+		show_message("You need %d soil to make a rock." % int(SOIL_PER_ROCK))
+	else:
+		ant.soil -= SOIL_PER_ROCK
+		ant.rocks += 1
+
+func throw_rock() -> void:
+	if ant.role != 1 or build_mode or ant.controls_locked or rock_cd > 0.0:
+		return
+	if ant.rocks <= 0:
+		show_message("No rocks. Press Y to turn soil into rocks.")
+		return
+	ant.rocks -= 1
+	rock_cd = ROCK_COOLDOWN
+	var aim := -ant.camera.global_transform.basis.z
+	var rock := RockShot.new()
+	rock.world = world
+	rock.damage = ROCK_DAMAGE
+	rock.velocity = (aim + Vector3(0, 0.12, 0)).normalized() * ROCK_SPEED
+	add_child(rock)
+	rock.global_position = ant.global_position + ant.basis.y * 0.9 + aim * 1.2
 
 # ---------- Fire ----------
 # Fires only start when the ant lights one with resin (H). They burn, spread over grass,
@@ -1748,13 +2653,42 @@ func spawn_spider(pos: Vector3) -> void:
 	sp.set_active(night_creatures)
 
 # Brings a creature back, unless its region has been forgotten (a new one appears with the region).
-func respawn_creature(home: Vector3, firefly: bool) -> void:
+func respawn_creature(home: Vector3, kind: String) -> void:
 	if not region_done.has(region_key(home.x, home.z)):
 		return
-	if firefly:
-		spawn_firefly(home)
-	else:
-		spawn_spider(home)
+	match kind:
+		"firefly":
+			spawn_firefly(home)
+		"spider":
+			spawn_spider(home)
+		"beetle":
+			spawn_beetle(home)
+		"centipede":
+			spawn_centipede(home)
+
+func spawn_beetle(pos: Vector3) -> void:
+	var b := Beetle.new()
+	b.ant = ant
+	b.queen_getter = func(): return queen
+	b.ground_at = ground_height
+	b.is_loaded = ground_ready
+	b.home = pos
+	b.died.connect(_on_creature_died)
+	region_node(region_key(pos.x, pos.z)).add_child(b)
+	b.global_position = pos
+	b.set_active(not night_creatures)
+
+func spawn_centipede(pos: Vector3) -> void:
+	var c := Centipede.new()
+	c.ant = ant
+	c.queen_getter = func(): return queen
+	c.ground_at = ground_height
+	c.is_loaded = ground_ready
+	c.home = pos
+	c.died.connect(_on_creature_died)
+	region_node(region_key(pos.x, pos.z)).add_child(c)
+	c.global_position = pos
+	c.set_active(night_creatures)
 
 # A creature died: drop its loot, and for fireflies, bring a new one back later.
 func _on_creature_died(c: Creature) -> void:
@@ -1766,15 +2700,192 @@ func _on_creature_died(c: Creature) -> void:
 		add_child(p)
 		p.global_position = c.global_position
 	var home := c.home
+	if c is TermiteQueen:
+		colony_destroyed((c as TermiteQueen).colony)
+		return
+	elif c is TermiteWorker:
+		var wc: Dictionary = (c as TermiteWorker).colony
+		wc["workers"] = maxi(0, int(wc["workers"]) - 1)
+		return
+	elif c is TermiteSoldier:
+		var sc: Dictionary = (c as TermiteSoldier).colony
+		sc["soldiers"] = maxi(0, int(sc["soldiers"]) - 1)
+		return
 	if c is Firefly:
-		get_tree().create_timer(FIREFLY_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, true))
+		get_tree().create_timer(FIREFLY_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, "firefly"))
 	elif c is Spider:
-		get_tree().create_timer(SPIDER_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, false))
+		get_tree().create_timer(SPIDER_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, "spider"))
+	elif c is Beetle:
+		get_tree().create_timer(BEETLE_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, "beetle"))
+	elif c is Centipede:
+		get_tree().create_timer(CENTIPEDE_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, "centipede"))
+
+# Prints the closest mounds to the start in the Output panel, so you can walk straight to one.
+func print_nearest_mounds() -> void:
+	var found := []
+	for cx in range(-12, 13):
+		for cz in range(-12, 13):
+			var m := mound_at_cell(Vector2i(cx, cz))
+			if not m.is_empty():
+				found.append(Vector2(float(m["x"]), float(m["z"])))
+	found.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.length() < b.length())
+	print("Nearest termite mounds (x, z):")
+	for i in mini(6, found.size()):
+		print("  ", found[i].round(), "  distance ", int(found[i].length()))
+
+func print_nearest_lakes() -> void:
+	var found := []
+	for cx in range(-4, 5):
+		for cz in range(-4, 5):
+			for lk in pools_at((float(cx) + 0.5) * POOL_CELL, (float(cz) + 0.5) * POOL_CELL):
+				if lk.get("lake", false):
+					found.append(Vector2(float(lk["x"]), float(lk["z"])))
+	found.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.length() < b.length())
+	print("Nearest lakes (x, z):")
+	for i in mini(5, found.size()):
+		print("  ", found[i].round(), "  distance ", int(found[i].length()))
+
+# ---------- Termite colonies ----------
+# When the region holding a mound is built, its colony moves in: the queen in her cell, a few
+# soldiers at the guard posts, and workers. The queen keeps laying more (up to a limit). When
+# she dies the colony is finished: nothing more spawns, what is left fades, and the mound
+# turns grey.
+
+const GREY_CHUNKS_PER_FRAME := 2
+
+func region_colony(job: Dictionary) -> void:
+	var rect := region_rect(job["key"])
+	var seen := {}
+	for corner in [rect.position, rect.position + Vector2(rect.size.x, 0), rect.position + Vector2(0, rect.size.y), rect.end]:
+		var cell := Vector2i(floori(corner.x / MOUND_CELL), floori(corner.y / MOUND_CELL))
+		if seen.has(cell):
+			continue
+		seen[cell] = true
+		var m := mound_at_cell(cell)
+		if m.is_empty():
+			continue
+		if rect.has_point(Vector2(float(m["x"]), float(m["z"]))):
+			spawn_colony(m, job["key"])
+
+func spawn_colony(m: Dictionary, key: Vector2i) -> void:
+	m["workers"] = 0
+	m["soldiers"] = 0
+	if m["dead"]:
+		return
+	var rn := region_node(key)
+	var q := TermiteQueen.new()
+	q.colony = m
+	q.spawn_cb = spawn_termite
+	q.is_loaded = ground_ready
+	q.ant = ant
+	q.home = m["queen_pos"]
+	q.died.connect(_on_creature_died)
+	rn.add_child(q)
+	q.global_position = m["queen_pos"]
+	q.rotation.y = 0.6
+	# Dim lights so the royal cell and the great hall are not pitch black.
+	for lp in [Vector3(m["royal"]), Vector3(m["hall"])]:
+		var l := OmniLight3D.new()
+		l.light_color = Color(1.0, 0.8, 0.5)
+		l.light_energy = 1.2
+		l.omni_range = 16.0
+		rn.add_child(l)
+		l.global_position = lp + Vector3(0, 2.0, 0)
+	for i in 6:
+		spawn_termite(m, "soldier")
+	for i in 4:
+		spawn_termite(m, "worker")
+
+func spawn_termite(m: Dictionary, kind: String) -> void:
+	if m["dead"]:
+		return
+	var key := region_key(float(m["x"]), float(m["z"]))
+	if not region_nodes.has(key):
+		return
+	var rn := region_node(key)
+	var c: Crawler
+	var pos: Vector3
+	if kind == "soldier":
+		var s := TermiteSoldier.new()
+		s.colony = m
+		var posts: Array = m["posts"]
+		pos = posts[randi() % posts.size()]
+		m["soldiers"] = int(m["soldiers"]) + 1
+		c = s
+	else:
+		var w := TermiteWorker.new()
+		w.colony = m
+		w.wander_min = float(m["R"]) + 6.0
+		w.wander_radius = 45.0
+		pos = m["entrance_in"]
+		m["workers"] = int(m["workers"]) + 1
+		c = w
+	c.ant = ant
+	c.queen_getter = func(): return null
+	c.ground_at = ground_height
+	c.is_loaded = ground_ready
+	c.home = pos if kind == "soldier" else Vector3(m["center"])
+	c.died.connect(_on_creature_died)
+	rn.add_child(c)
+	c.global_position = pos + Vector3(randf_range(-1.0, 1.0), 0.6, randf_range(-1.0, 1.0))
+
+func colony_destroyed(m: Dictionary) -> void:
+	if m["dead"]:
+		return
+	m["alive"] = false
+	m["dead"] = true
+	show_message("The termite queen is dead. The colony is finished!")
+	# Everything the workers stored spills out of the royal cell, plus a reward of sugar.
+	var qp: Vector3 = m["queen_pos"]
+	var stock: Dictionary = m["stock"]
+	stock["sugar"] = int(stock.get("sugar", 0)) + 6
+	for k in stock:
+		var left := int(stock[k])
+		while left > 0:
+			var n := mini(left, 4)
+			left -= n
+			var p := Pickup.new()
+			p.kind = k
+			p.amount = n
+			add_child(p)
+			p.global_position = qp + Vector3(randf_range(-2.0, 2.0), 2.0, randf_range(-2.0, 2.0))
+		stock[k] = 0
+	# Queue every loaded chunk of the mound to turn grey.
+	var center: Vector3 = m["center"]
+	var reach := float(m["R"]) + 30.0
+	var lo := Vector2i(floori((center.x - reach) / Chunk.SIZE), floori((center.z - reach) / Chunk.SIZE))
+	var hi := Vector2i(floori((center.x + reach) / Chunk.SIZE), floori((center.z + reach) / Chunk.SIZE))
+	for cx in range(lo.x, hi.x + 1):
+		for cz in range(lo.y, hi.y + 1):
+			for cy in HEIGHT_CHUNKS:
+				var cp := Vector3i(cx, cy, cz)
+				if world.chunks.has(cp):
+					grey_jobs.append(cp)
+
+func process_grey() -> void:
+	var n := 0
+	while not grey_jobs.is_empty() and n < GREY_CHUNKS_PER_FRAME:
+		var cp: Vector3i = grey_jobs.pop_front()
+		var ch: Chunk = world.get_chunk(cp)
+		if ch == null:
+			continue
+		var changed := false
+		for lx in Chunk.SIZE:
+			for ly in Chunk.SIZE:
+				for lz in Chunk.SIZE:
+					if ch.get_material(lx, ly, lz) == Blocks.MOUND:
+						ch.set_voxel(lx, ly, lz, ch.get_density(lx, ly, lz), Blocks.DEAD_MOUND)
+						changed = true
+		n += 1
+		if changed:
+			queue_remesh([cp], Vector3(cp * Chunk.SIZE))
 
 # ---------- Trees and boulders ----------
 # Trees are enormous at ant scale: towering trunks you can climb, with a canopy far overhead.
 # Boulders are solid rock. The ground around both is too hard to dig, so nothing is left floating.
 
+const FOG_CLEAR_UNTIL := 40.0   # distance fog: nothing is hazy up to here...
+const FOG_FULL_AT := 600.0      # ...and everything is fully hazy here, at the far edge of the distant land
 const FOG_DENSITY := 0.007   # lower = clearer view, but the edge of the loaded world shows more (0.016 was the old value)
 
 var grain_albedo: NoiseTexture2D
@@ -1799,6 +2910,8 @@ func obstacles_near(x: float, z: float) -> Array:
 	return out
 
 func near_obstacle(x: float, z: float, margin: float = 1.5) -> bool:
+	if near_mound(x, z, margin):
+		return true
 	for o in obstacles_near(x, z):
 		var op: Vector3 = o["pos"]
 		if Vector2(x - op.x, z - op.z).length() < float(o["radius"]) + margin:
@@ -1860,7 +2973,10 @@ func add_plant(x: float, z: float, rng: RandomNumberGenerator, biome: int, bark:
 		HIGHLANDS:
 			add_pine(x, z, rng, Color(0.08, 0.28, 0.14))
 		_:
-			add_round_tree(x, z, rng, bark)
+			if rng.randf() < 0.45:
+				add_spruce(x, z, rng)
+			else:
+				add_round_tree(x, z, rng, bark)
 
 # A static body for a plant, sunk slightly so it never floats.
 func new_plant_body(x: float, z: float) -> StaticBody3D:
@@ -1877,11 +2993,18 @@ func plant_mat(color: Color) -> StandardMaterial3D:
 	m.roughness = 0.9
 	return m
 
+# Scenery fades out smoothly toward the edge of the drawn world instead of appearing suddenly.
+func fade_far(mi: MeshInstance3D) -> void:
+	mi.visibility_range_end = TREE_FADE_END
+	mi.visibility_range_end_margin = 12.0
+	mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+
 func plant_part(body: Node3D, mesh: Mesh, color: Color, pos: Vector3, orient: Basis = Basis.IDENTITY) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.material_override = plant_mat(color)
 	mi.transform = Transform3D(orient, pos)
+	fade_far(mi)
 	body.add_child(mi)
 	return mi
 
@@ -2046,6 +3169,26 @@ func add_pine(x: float, z: float, rng: RandomNumberGenerator, leaf: Color) -> vo
 				Vector3(0, h * 0.3 + t * h * 0.6 + ch * 0.4, 0))
 	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.4})
 
+# A tall forest spruce: a thin trunk and many stacked, narrowing skirts of needles that droop at the tips.
+func add_spruce(x: float, z: float, rng: RandomNumberGenerator) -> void:
+	var body := new_plant_body(x, z)
+	var h := rng.randf_range(30.0, 46.0)
+	var r := rng.randf_range(0.9, 1.4)
+	var tm := cylinder_mesh(r * 0.45, r * 1.1, h * 0.8, 10)
+	plant_part(body, tm, Color(0.27, 0.18, 0.11), Vector3(0, h * 0.4, 0))
+	trunk_collision(body, tm, Vector3(0, h * 0.4, 0))
+	var base := Color(0.07, 0.24, 0.13).lerp(Color(0.12, 0.32, 0.17), rng.randf())
+	var layers := rng.randi_range(6, 8)
+	var widest := rng.randf_range(6.5, 8.5)
+	for i in layers:
+		var t := float(i) / float(layers - 1)
+		var cr := lerpf(widest, 1.2, pow(t, 0.9))
+		var ch := lerpf(8.0, 5.0, t)
+		var g := rng.randf_range(0.85, 1.12)
+		plant_part(body, cylinder_mesh(0.0, cr, ch, 12), Color(base.r * g, base.g * g, base.b * g),
+				Vector3(0, h * 0.2 + t * h * 0.74 + ch * 0.4, 0))
+	add_obstacle({"pos": Vector3(x, ground_height(x, z), z), "radius": r * 1.4})
+
 func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMaterial3D) -> void:
 	var r := rng.randf_range(2.4, 3.4)          # trunk radius
 	var h := rng.randf_range(26.0, 38.0)        # height above the ground
@@ -2068,6 +3211,7 @@ func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: Standa
 	trunk.mesh = tm
 	trunk.material_override = bark
 	trunk.position = Vector3(0, (h + 2.0) * 0.5, 0)
+	fade_far(trunk)
 	body.add_child(trunk)
 	var col := CollisionShape3D.new()
 	col.shape = tm.create_convex_shape(true, true)
@@ -2088,6 +3232,7 @@ func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: Standa
 		var leaves := MeshInstance3D.new()
 		leaves.mesh = sm
 		leaves.material_override = leaf_mat
+		fade_far(leaves)
 		var s := rng.randf_range(6.0, 10.0)
 		leaves.scale = Vector3(s, s * 0.7, s)
 		leaves.position = Vector3(rng.randf_range(-6.0, 6.0), h + 2.0 + rng.randf_range(-3.0, 4.0), rng.randf_range(-6.0, 6.0))
@@ -2113,6 +3258,7 @@ func add_rock(x: float, z: float, r: float, rng: RandomNumberGenerator, biome: i
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.material_override = mat
+	fade_far(mi)
 	body.add_child(mi)
 	var col := CollisionShape3D.new()
 	col.shape = mesh.create_convex_shape(true, true)
@@ -2254,15 +3400,21 @@ func new_region_job(key: Vector2i) -> Dictionary:
 		items.append(["tree"])
 	for i in int(BOULDERS_PER_REGION + rng.randf()):
 		items.append(["boulder"])
+	items.append(["landmark"])
 	for i in ceili(GRASS_CLUMPS_PER_REGION / 40.0):
 		items.append(["grass", 40])
 	items.append(["build_grass"])
 	for i in ceili(PEBBLES_PER_REGION / 60.0):
 		items.append(["pebbles", 60])
 	items.append(["build_pebbles"])
+	for i in ceili(FLORA_PATCHES_PER_REGION / 6.0):
+		items.append(["flora", 6])
+	items.append(["shore", 90])
+	items.append(["build_flora"])
 	items.append(["pickups"])
 	items.append(["creatures"])
-	return {"key": key, "rng": rng, "items": items, "grass": {}, "pebbles": {}}
+	items.append(["colony"])
+	return {"key": key, "rng": rng, "items": items, "grass": {}, "pebbles": {}, "flora": {}}
 
 func run_region_item(job: Dictionary, item: Array) -> void:
 	match item[0]:
@@ -2278,10 +3430,20 @@ func run_region_item(job: Dictionary, item: Array) -> void:
 			region_pebbles(job, item[1])
 		"build_pebbles":
 			build_pebbles(job)
+		"landmark":
+			region_landmark(job)
+		"flora":
+			region_flora(job, item[1])
+		"shore":
+			region_shore(job, item[1])
+		"build_flora":
+			build_flora(job)
 		"pickups":
 			region_pickups(job)
 		"creatures":
 			region_creatures(job)
+		"colony":
+			region_colony(job)
 
 # A random spot inside the region, kept this far from its edges.
 func region_spot(job: Dictionary, margin: float) -> Vector2:
@@ -2304,7 +3466,7 @@ func region_tree(job: Dictionary) -> void:
 	var z := p.y
 	if not inland(x, z):
 		return
-	if near_pool(x, z, 2.8) or near_obstacle(x, z, 20.0):
+	if near_pool(x, z, 2.8) or near_obstacle(x, z, 6.0):
 		return
 	if Vector2(x, z).distance_to(STORAGE_XZ) < 14.0:
 		return
@@ -2398,6 +3560,8 @@ func build_grass(job: Dictionary) -> void:
 		shader.code = GRASS_SHADER
 		grass_mat_shared = ShaderMaterial.new()
 		grass_mat_shared.shader = shader
+		grass_mat_shared.set_shader_parameter("fade_start", GRASS_FADE_START)
+		grass_mat_shared.set_shader_parameter("fade_end", GRASS_FADE_END)
 		blade_mesh_shared = make_blade_mesh()
 	for key in buckets:
 		var xforms: Array = buckets[key]["xf"]
@@ -2498,6 +3662,9 @@ func build_pebbles(job: Dictionary) -> void:
 		pebble_mat_shared = StandardMaterial3D.new()
 		pebble_mat_shared.vertex_color_use_as_albedo = true
 		pebble_mat_shared.roughness = 1.0
+		pebble_mat_shared.distance_fade_mode = BaseMaterial3D.DISTANCE_FADE_PIXEL_DITHER
+		pebble_mat_shared.distance_fade_max_distance = GRASS_FADE_START
+		pebble_mat_shared.distance_fade_min_distance = GRASS_FADE_END
 	for key in buckets:
 		var b: Dictionary = buckets[key]
 		var xforms: Array = b["xf"]
@@ -2518,6 +3685,183 @@ func build_pebbles(job: Dictionary) -> void:
 		hidden.fill(0)
 		decor_sets.append({"mm": mm, "pos": b["pos"], "hidden": hidden, "bodies": b["bodies"], "rect": region_rect(key)})
 		recheck_dug_decor(decor_sets[decor_sets.size() - 1])
+
+# One big solid thing now and then: a fallen log, a hollow stump, a half-buried bottle cap or a giant acorn.
+func region_landmark(job: Dictionary) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	if rng.randf() > LANDMARK_CHANCE:
+		return
+	var sp := region_spot(job, 6.0)
+	var x := sp.x
+	var z := sp.y
+	if not inland(x, z) or near_pool(x, z, 1.8) or near_obstacle(x, z, 4.5):
+		return
+	if Vector2(x, z).distance_to(STORAGE_XZ) < 12.0:
+		return
+	var kind := Flora.pick_landmark(biome_at(x, z), rng.randf())
+	if kind < 0:
+		return
+	var variant := rng.randi() % (3 if kind == 2 else 2)
+	var gy := ground_height(x, z)
+	var body := StaticBody3D.new()
+	body.collision_layer = 1
+	body.collision_mask = 0
+	region_node(region_key(x, z)).add_child(body)
+	var sink: float = [0.25, 0.2, 0.3, 0.2][kind]
+	body.global_position = Vector3(x, gy - sink, z)
+	var tilt_x := rng.randf_range(0.15, 0.35) if kind == 2 else 0.0
+	var tilt_z := rng.randf_range(-0.2, 0.2) if kind == 2 else 0.0
+	body.rotation = Vector3(tilt_x, rng.randf_range(0.0, TAU), tilt_z)
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = Flora.get_landmark_mesh(kind, variant)
+	if landmark_mat == null:
+		landmark_mat = Flora.landmark_material()
+	mi.material_override = landmark_mat
+	fade_far(mi)
+	body.add_child(mi)
+
+	var col := CollisionShape3D.new()
+	var radius := 1.5
+	match kind:
+		0:
+			var cyl := CylinderShape3D.new()
+			cyl.radius = 0.9
+			cyl.height = 7.0
+			col.shape = cyl
+			col.transform = Transform3D(Basis(Vector3(0, 0, 1), PI / 2.0), Vector3(0, 0.9, 0))
+			radius = 3.8
+		1:
+			var cyl := CylinderShape3D.new()
+			cyl.radius = 1.05
+			cyl.height = 1.7
+			col.shape = cyl
+			col.position = Vector3(0, 0.85, 0)
+			radius = 1.5
+		2:
+			var cyl := CylinderShape3D.new()
+			cyl.radius = 1.5
+			cyl.height = 0.55
+			col.shape = cyl
+			col.position = Vector3(0, 0.275, 0)
+			radius = 1.8
+		3:
+			var sph := SphereShape3D.new()
+			sph.radius = 1.1
+			col.shape = sph
+			col.position = Vector3(0, 1.3, 0)
+			radius = 1.4
+	body.add_child(col)
+	add_obstacle({"pos": Vector3(x, gy, z), "radius": radius})
+
+# Flowers, mushrooms, cacti and moss. Each patch is one kind, picked from the biome's list (see flora.gd).
+func region_flora(job: Dictionary, count: int) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	var buckets: Dictionary = job["flora"]
+	for c in count:
+		var sp := region_spot(job, 0.0)
+		var cx := sp.x
+		var cz := sp.y
+		if not inland(cx, cz) or near_pool(cx, cz):
+			continue
+		var kind0 := surface_kind(cx, cz)
+		if kind0 == Blocks.MOUND or kind0 == Blocks.DEAD_MOUND or kind0 == Blocks.STONE or kind0 == Blocks.AIR:
+			continue
+		if Vector2(cx - storage_pos.x, cz - storage_pos.z).length() < STORAGE_RADIUS + 3.0:
+			continue
+		var species := Flora.pick(biome_at(cx, cz), rng.randf())
+		if species < 0:
+			continue
+		var info: Array = Flora.PATCH[species]
+		var n := rng.randi_range(int(info[0]), int(info[1]))
+		var spread := float(info[2])
+		for i in n:
+			var x := cx + rng.randf_range(-spread, spread)
+			var z := cz + rng.randf_range(-spread, spread)
+			add_flora_instance(buckets, species, x, z, rng)
+
+# Plants one flora instance if the spot allows it.
+func add_flora_instance(buckets: Dictionary, species: int, x: float, z: float, rng: RandomNumberGenerator, need_dry: bool = true) -> void:
+	if not inland(x, z) or near_pool(x, z) or near_obstacle(x, z, 0.8):
+		return
+	var k := surface_kind(x, z)
+	if k == Blocks.MOUND or k == Blocks.DEAD_MOUND or k == Blocks.STONE or k == Blocks.AIR:
+		return
+	var base := Vector3(x, ground_height(x, z) - 0.08, z)
+	var sc := rng.randf_range(0.75, 1.3)
+	var tilt := Vector3(rng.randf_range(-0.07, 0.07), rng.randf_range(0.0, TAU), rng.randf_range(-0.07, 0.07))
+	var bs := Basis.from_euler(tilt) * Basis.from_scale(Vector3.ONE * sc)
+	var key := region_key(x, z)
+	if not buckets.has(key):
+		buckets[key] = {}
+	if not buckets[key].has(species):
+		buckets[key][species] = {"xf": [], "pos": []}
+	buckets[key][species]["xf"].append(Transform3D(bs, base))
+	buckets[key][species]["pos"].append(base)
+
+# Lake banks: cattails at the water's edge, then bushes, ferns and flowers up the bank.
+func region_shore(job: Dictionary, tries: int) -> void:
+	var rng: RandomNumberGenerator = job["rng"]
+	var buckets: Dictionary = job["flora"]
+	var mid := region_spot(job, REGION_SIZE * 0.5 - 0.01)
+	var lakes := []
+	for p in pools_at(mid.x, mid.y):
+		if p.get("lake", false):
+			lakes.append(p)
+	if lakes.is_empty():
+		return
+	for t in tries:
+		var sp := region_spot(job, 0.0)
+		for p in lakes:
+			var r: float = p["radius"]
+			var d := pool_dist(p, sp.x, sp.y)
+			if d < r * 0.78 or d > r * 1.7:
+				continue
+			var gh := ground_height(sp.x, sp.y)
+			var level: float = p["level0"]
+			if gh < level - 0.2:
+				continue   # underwater
+			var species := 6   # cattail
+			if gh > level + 0.8:
+				var roll := rng.randf()
+				if roll < 0.45:
+					species = 27   # hedge bush
+				elif roll < 0.65:
+					species = 20   # berry bush
+				elif roll < 0.8:
+					species = 18   # fern
+				elif roll < 0.9:
+					species = 0    # daisy
+				else:
+					species = 3    # buttercup
+			var n := 3 if species == 6 else rng.randi_range(1, 3)
+			for i in n:
+				add_flora_instance(buckets, species, sp.x + rng.randf_range(-1.6, 1.6), sp.y + rng.randf_range(-1.6, 1.6), rng)
+
+func build_flora(job: Dictionary) -> void:
+	var buckets: Dictionary = job["flora"]
+	for key in buckets:
+		for species in buckets[key]:
+			if not flora_mats.has(species):
+				flora_mats[species] = Flora.make_material(species, GRASS_FADE_START, GRASS_FADE_END)
+			var xforms: Array = buckets[key][species]["xf"]
+			var positions: Array = buckets[key][species]["pos"]
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.mesh = Flora.get_mesh(species)
+			mm.instance_count = xforms.size()
+			for i in xforms.size():
+				mm.set_instance_transform(i, xforms[i])
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = mm
+			mmi.material_override = flora_mats[species]
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			region_node(key).add_child(mmi)
+			var hidden := []
+			hidden.resize(positions.size())
+			hidden.fill(0)
+			decor_sets.append({"mm": mm, "pos": positions, "hidden": hidden, "rect": region_rect(key)})
+			recheck_dug_decor(decor_sets[decor_sets.size() - 1])
 
 # Resources sit at fixed spots. Each spot grows its resource back some time after you take it.
 func region_pickups(job: Dictionary) -> void:
@@ -2559,6 +3903,20 @@ func region_creatures(job: Dictionary) -> void:
 		if sp.distance_to(STORAGE_XZ) < 14.0 or near_pool(sp.x, sp.y, 2.0) or near_obstacle(sp.x, sp.y, 2.0):
 			continue
 		spawn_spider(Vector3(sp.x, ground_height(sp.x, sp.y) + 0.5, sp.y))
+	for i in int(BEETLES_PER_REGION + rng.randf()):
+		var sp := region_spot(job, 4.0)
+		if not inland(sp.x, sp.y) or rng.randf() > BEETLE_CHANCE[biome_at(sp.x, sp.y)]:
+			continue
+		if sp.distance_to(STORAGE_XZ) < 14.0 or near_pool(sp.x, sp.y, 2.0) or near_obstacle(sp.x, sp.y, 2.0):
+			continue
+		spawn_beetle(Vector3(sp.x, ground_height(sp.x, sp.y) + 0.5, sp.y))
+	for i in int(CENTIPEDES_PER_REGION + rng.randf()):
+		var sp := region_spot(job, 4.0)
+		if not inland(sp.x, sp.y) or rng.randf() > CENTIPEDE_CHANCE[biome_at(sp.x, sp.y)]:
+			continue
+		if sp.distance_to(STORAGE_XZ) < 14.0 or near_pool(sp.x, sp.y, 2.0) or near_obstacle(sp.x, sp.y, 2.0):
+			continue
+		spawn_centipede(Vector3(sp.x, ground_height(sp.x, sp.y) + 0.5, sp.y))
 
 
 # ---------- World streaming ----------
@@ -2620,6 +3978,7 @@ func ground_ready(pos: Vector3) -> bool:
 	for q in remesh_queue:
 		if q.x == c.x and q.z == c.y:
 			return false
+	ensure_solid(c)
 	return true
 
 func on_column_data(col: Vector2i) -> void:
@@ -2700,16 +4059,29 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 					chunk_nodes.erase(cpos)
 				remesh_queue.erase(cpos)
 
-	# Grass, rocks, trees and creatures are shown (and run) only over ground that is drawn.
+	update_collision(cc)
+
+	# Grass, rocks, trees and creatures are shown over ground that is drawn, and run only fairly close to you.
 	for key in region_nodes:
 		var rn: Node3D = region_nodes[key]
 		var shown := false
+		var active := false
+		var decor := false
 		for dx in 2:
 			for dz in 2:
-				if col_meshed.has(Vector2i(key.x * 2 + dx, key.y * 2 + dz)):
+				var rc := Vector2i(key.x * 2 + dx, key.y * 2 + dz)
+				if col_meshed.has(rc):
 					shown = true
+				var rd := Vector2(rc - cc).length()
+				if rd <= ACTIVE_COLS:
+					active = true
+				if rd <= GRASS_COLS:
+					decor = true
 		rn.visible = shown
-		rn.process_mode = Node.PROCESS_MODE_INHERIT if shown else Node.PROCESS_MODE_DISABLED
+		for ch in rn.get_children():
+			if ch is MultiMeshInstance3D:
+				ch.visible = decor
+		rn.process_mode = Node.PROCESS_MODE_INHERIT if (shown and active) else Node.PROCESS_MODE_DISABLED
 
 	evict_far(center, cc)
 
@@ -2809,6 +4181,14 @@ func update_biome(delta: float) -> void:
 	var b := biome_at(ant.global_position.x, ant.global_position.z)
 	ant.terrain_speed = BIOME_WALK_SPEED[b]
 	ant.sprint_cost_mult = BIOME_SPRINT_COST[b]
+	var mm := mound_near(ant.global_position.x, ant.global_position.z)
+	if not mm.is_empty() and not mm["dead"]:
+		var md := Vector2(ant.global_position.x - float(mm["x"]), ant.global_position.z - float(mm["z"])).length()
+		if md < 70.0 and not mm["alerted"]:
+			mm["alerted"] = true
+			show_message("A termite mound! Soldiers guard it. Find the queen deep below.")
+		elif md > 140.0:
+			mm["alerted"] = false
 	if b != current_biome:
 		current_biome = b
 		var note := ""
@@ -2887,17 +4267,48 @@ func build_chunk_node(cpos: Vector3i) -> void:
 	mi.mesh = mesh
 	mi.material_override = material
 	mi.position = Vector3(cpos * Chunk.SIZE)
+	add_child(mi)
+	chunk_nodes[cpos] = mi
+	# Ground near you is solid. Far ground is only a picture until you get close.
+	if ant == null or chunk_dist(cpos, col_of(ant.global_position)) <= COLLISION_COLS:
+		attach_collision(mi)
 
+func chunk_dist(cpos: Vector3i, cc: Vector2i) -> float:
+	return Vector2(cpos.x - cc.x, cpos.z - cc.y).length()
+
+func attach_collision(mi: MeshInstance3D) -> void:
+	if mi.has_meta("solid"):
+		return
+	mi.set_meta("solid", true)
 	var body := StaticBody3D.new()
 	var col := CollisionShape3D.new()
-	var shape := mesh.create_trimesh_shape()
+	var shape := (mi.mesh as ArrayMesh).create_trimesh_shape()
 	shape.backface_collision = true
 	col.shape = shape
 	body.add_child(col)
 	mi.add_child(body)
 
-	add_child(mi)
-	chunk_nodes[cpos] = mi
+# Makes ground solid as you approach it, and drops the collision of ground you left behind.
+func update_collision(cc: Vector2i) -> void:
+	var added := 0
+	for cpos in chunk_nodes:
+		var mi: MeshInstance3D = chunk_nodes[cpos]
+		var d := chunk_dist(cpos, cc)
+		if d <= COLLISION_COLS:
+			if not mi.has_meta("solid") and added < 8:
+				attach_collision(mi)
+				added += 1
+		elif d > COLLISION_COLS + 2.0 and mi.has_meta("solid"):
+			mi.remove_meta("solid")
+			for ch in mi.get_children():
+				ch.queue_free()
+
+# The ground under something is only safe to stand on once it is solid.
+func ensure_solid(c: Vector2i) -> void:
+	for cy in HEIGHT_CHUNKS:
+		var cpos := Vector3i(c.x, cy, c.y)
+		if chunk_nodes.has(cpos):
+			attach_collision(chunk_nodes[cpos])
 
 # ---------- UI and environment ----------
 
@@ -2909,6 +4320,56 @@ func setup_crosshair() -> void:
 	label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	layer.add_child(label)
 	add_child(layer)
+
+func setup_map() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 5
+	world_map = WorldMap.new()
+	world_map.half = float(HALF)
+	world_map.river_width = float(RIVER_WIDTH)
+	world_map.biome_fn = biome_at
+	world_map.edge_fn = edge_at_xz
+	world_map.start_pos = STORAGE_XZ
+	world_map.visible = false
+	layer.add_child(world_map)
+	add_child(layer)
+
+func edge_at_xz(x: float, z: float) -> float:
+	return edge_dist(x, z)
+
+var map_timer := 0.0
+
+func update_map(delta: float) -> void:
+	world_map.paint_step(3)
+	world_map.update_player(ant.global_position, -ant.global_transform.basis.z, delta)
+	if is_instance_valid(queen):
+		world_map.queen_pos = Vector2(queen.global_position.x, queen.global_position.z)
+	else:
+		world_map.queen_pos = Vector2.INF
+	map_timer -= delta
+	if map_timer > 0.0:
+		return
+	map_timer = 0.5
+	# Mounds show up on the map once you are within about 900 units of them.
+	var cell := Vector2i(floori(ant.global_position.x / MOUND_CELL), floori(ant.global_position.z / MOUND_CELL))
+	for dx in range(-3, 4):
+		for dz in range(-3, 4):
+			var m := mound_at_cell(cell + Vector2i(dx, dz))
+			if m.is_empty():
+				continue
+			var mp := Vector2(float(m["x"]), float(m["z"]))
+			if mp.distance_to(Vector2(ant.global_position.x, ant.global_position.z)) < 900.0:
+				world_map.note_mound(mp, m["dead"])
+	# Lakes show up the same way, within about 900 units.
+	var pcell := Vector2i(floori(ant.global_position.x / POOL_CELL), floori(ant.global_position.z / POOL_CELL))
+	for dx in range(-4, 5):
+		for dz in range(-4, 5):
+			var qc := pcell + Vector2i(dx, dz)
+			for lk in pools_at((float(qc.x) + 0.5) * POOL_CELL, (float(qc.y) + 0.5) * POOL_CELL):
+				if lk.get("lake", false):
+					var lp := Vector2(float(lk["x"]), float(lk["z"]))
+					if lp.distance_to(Vector2(ant.global_position.x, ant.global_position.z)) < 900.0:
+						world_map.note_lake(lp, float(lk["radius"]), lake_outline(lk))
 
 func setup_hud() -> void:
 	var layer := CanvasLayer.new()
@@ -2961,6 +4422,7 @@ func setup_hud() -> void:
 		["resin", "Resin", Pickup.KINDS["resin"]["color"]],
 		["soil", "Soil", Color(0.55, 0.36, 0.18)],
 		["water", "Water", Color(0.25, 0.55, 0.9)],
+		["rock", "Rocks", Color(0.55, 0.55, 0.58)],
 	]
 	for r in rows:
 		var swatch := ColorRect.new()
@@ -2997,8 +4459,8 @@ func setup_hud() -> void:
 	box.offset_bottom = -100.0   # sits above the hotbar
 	box.add_theme_constant_override("separation", 8)
 	layer.add_child(box)
-	soil_bar = make_bar(box, Color(0.55, 0.36, 0.18), Ant.SOIL_CAPACITY)
-	water_bar = make_bar(box, Color(0.25, 0.55, 0.9), Ant.WATER_CAPACITY)
+	soil_bar = make_bar(box, Color(0.55, 0.36, 0.18), Ant.SOIL_CAPACITY * 1.5)
+	water_bar = make_bar(box, Color(0.25, 0.55, 0.9), Ant.WATER_CAPACITY * 1.5)
 	energy_bar = make_bar(box, Color(0.95, 0.8, 0.2), Ant.ENERGY_MAX)
 	health_bar = make_bar(box, Color(0.85, 0.2, 0.2), Ant.MAX_HEALTH)
 	acid_bar = make_bar(box, Color(0.55, 0.85, 0.2), Ant.ACID_MAX)
@@ -3059,6 +4521,14 @@ func setup_environment() -> void:
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.7, 0.8, 0.9)
 	env.fog_density = FOG_DENSITY
+	# Newer Godot versions can fade the world out by distance, so its far edge melts into the haze
+	# instead of ending in a visible line. Older versions just keep the plain fog above.
+	if "fog_depth_end" in env:
+		env.set("fog_mode", 1)
+		env.set("fog_depth_begin", FOG_CLEAR_UNTIL)
+		env.set("fog_depth_end", FOG_FULL_AT)
+		env.set("fog_depth_curve", 1.0)
+		env.fog_density = 1.0
 
 	# Ambient occlusion darkens creases and tunnels (Forward+ renderer only).
 	env.ssao_enabled = true
@@ -3070,6 +4540,7 @@ func setup_environment() -> void:
 	env.glow_intensity = 0.6
 	env.adjustment_enabled = true
 	env.adjustment_saturation = 1.2
+	env.adjustment_contrast = 1.08
 
 	var we := WorldEnvironment.new()
 	we.environment = env
@@ -3085,7 +4556,10 @@ func setup_environment() -> void:
 
 	# A dim blue moon that shines opposite the sun.
 	moon = DirectionalLight3D.new()
-	moon.light_color = Color(0.6, 0.7, 1.0)
+	moon.light_color = Color(0.55, 0.68, 1.0)
 	moon.light_energy = 0.0
 	moon.shadow_enabled = false
+	moon.directional_shadow_max_distance = 120.0
+	moon.shadow_bias = 0.08
+	moon.shadow_normal_bias = 2.0
 	add_child(moon)

@@ -13,3 +13,5 @@ const GRAVEL := 7
 const CHALK := 8
 const SNOW := 9
 const DRY_GRASS := 10
+const MOUND := 11        # termite mound earth
+const DEAD_MOUND := 12   # a mound whose queen is dead: grey

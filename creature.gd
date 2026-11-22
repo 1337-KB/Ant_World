@@ -10,6 +10,7 @@ signal died(creature: Creature)
 var max_health := 30.0
 var health := 30.0
 var nocturnal := false      # true for creatures that only come out at night
+var diurnal := false       # true for creatures that only come out by day
 var active := true          # inactive creatures are hidden and cannot be hit (fireflies by day)
 var home := Vector3.ZERO     # where it lives; wandering stays near here
 var is_loaded: Callable      # (position) -> true when the ground there exists. Set by main.

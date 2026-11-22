@@ -30,6 +30,8 @@ static func block_color(id: int) -> Color:
 		Blocks.CHALK: return Color(0.86, 0.85, 0.80)
 		Blocks.SNOW: return Color(0.93, 0.96, 1.0)
 		Blocks.DRY_GRASS: return Color(0.80, 0.66, 0.28)
+		Blocks.MOUND: return Color(0.55, 0.34, 0.20)
+		Blocks.DEAD_MOUND: return Color(0.50, 0.50, 0.52)
 	return Color(1, 0, 1)  # magenta = unknown material
 
 # Final color of one vertex: base material color, then slope, veins, staining,
@@ -43,6 +45,41 @@ static func vertex_color(mat: int, wp: Vector3, normal: Vector3,
 	if mat == Blocks.GRASS:
 		var steep := 1.0 - smoothstep(0.45, 0.75, normal.y)
 		base = base.lerp(block_color(Blocks.DIRT), steep)
+
+	# Richer ground: patches and layers that differ by material, so no area is one flat colour.
+	var mid := speck_noise.get_noise_3d(wp.x * 0.3, wp.y * 0.3, wp.z * 0.3)     # patches about 10 units wide
+	var big := blotch_noise.get_noise_3d(wp.x * 2.2 + 40.0, wp.y * 2.2, wp.z * 2.2)   # a second, different pattern
+	match mat:
+		Blocks.GRASS:
+			if mid > 0.0:
+				base = base.lerp(Color(0.50, 0.62, 0.14), minf(mid * 1.3, 1.0) * 0.6)   # sun-bleached olive patches
+			else:
+				base = base.lerp(Color(0.08, 0.46, 0.16), minf(-mid * 1.3, 1.0) * 0.55)  # deep, damp green patches
+			var bare := smoothstep(0.40, 0.60, big)
+			base = base.lerp(Color(0.45, 0.31, 0.17), bare * 0.85)                      # worn bare soil
+		Blocks.DRY_GRASS:
+			base = base.lerp(Color(0.68, 0.46, 0.18), smoothstep(0.0, 0.5, mid) * 0.5)
+			base = base.lerp(Color(0.90, 0.80, 0.40), smoothstep(0.0, 0.5, -mid) * 0.45)
+		Blocks.DIRT, Blocks.CLAY:
+			var band := sin(wp.y * 0.9 + big * 2.5) * 0.5 + 0.5                           # soil layers, easy to see in tunnels
+			base = base.lerp(base.darkened(0.3), band * 0.4)
+			base = base.lerp(Color(0.52, 0.38, 0.22), smoothstep(0.3, 0.7, mid) * 0.35)
+		Blocks.SAND:
+			var ripple := sin(wp.x * 0.7 + wp.z * 0.4 + big * 4.0) * 0.5 + 0.5
+			base = base.lerp(Color(0.90, 0.82, 0.56), ripple * 0.5)
+			base = base.lerp(Color(0.70, 0.60, 0.38), (1.0 - ripple) * 0.35)
+		Blocks.STONE:
+			var layers := sin(wp.y * 1.1 + vein_noise.get_noise_3d(wp.x, 0.0, wp.z) * 3.0) * 0.5 + 0.5
+			base = base.lerp(Color(0.38, 0.38, 0.40), layers * 0.45)                     # rock strata
+			base = base.lerp(Color(0.58, 0.52, 0.44), smoothstep(0.3, 0.7, big) * 0.35)
+		Blocks.GRAVEL:
+			base = base.lerp(Color(0.40, 0.38, 0.36), smoothstep(-0.2, 0.6, big) * 0.6)
+			base = base.lerp(Color(0.68, 0.62, 0.52), smoothstep(0.0, 0.6, -mid) * 0.5)
+		Blocks.SNOW:
+			base = base.lerp(Color(0.78, 0.87, 0.98), smoothstep(0.1, 0.6, mid) * 0.7)   # cold blue hollows
+		Blocks.MUD:
+			base = base.lerp(Color(0.09, 0.07, 0.05), smoothstep(0.0, 0.5, big) * 0.7)   # wet dark spots
+			base = base.lerp(Color(0.28, 0.20, 0.13), smoothstep(0.1, 0.6, -mid) * 0.5)
 
 	# Thin, lighter veins running through stone.
 	if mat == Blocks.STONE:
