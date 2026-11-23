@@ -3,6 +3,7 @@ extends CanvasLayer
 
 # The panel for a wooden box or water barrel. Press E near one to open it.
 # Put moves what you carry into it. Take moves what it holds back to you.
+# The amount buttons choose how much one click moves: 1, 10, 50 or all.
 
 const NAMES := {"soil": "Soil", "water": "Water"}
 
@@ -14,6 +15,7 @@ var panel: PanelContainer
 var title: Label
 var rows_box: VBoxContainer
 var rows := {}   # kind -> Label
+var amount := -1   # how much one click of Put or Take moves. -1 means as much as will fit.
 
 func _ready() -> void:
 	panel = PanelContainer.new()
@@ -41,6 +43,23 @@ func _ready() -> void:
 	title = Label.new()
 	title.add_theme_font_size_override("font_size", 22)
 	col.add_child(title)
+	# How much each click moves.
+	var amt_row := HBoxContainer.new()
+	amt_row.add_theme_constant_override("separation", 8)
+	var amt_label := Label.new()
+	amt_label.text = "Amount per click:"
+	amt_row.add_child(amt_label)
+	var group := ButtonGroup.new()
+	for opt in [[1, "1"], [10, "10"], [50, "50"], [-1, "All"]]:
+		var b := Button.new()
+		b.text = opt[1]
+		b.toggle_mode = true
+		b.button_group = group
+		b.button_pressed = (opt[0] == amount)
+		b.custom_minimum_size = Vector2(56, 32)
+		b.pressed.connect(func(): amount = opt[0])
+		amt_row.add_child(b)
+	col.add_child(amt_row)
 	rows_box = VBoxContainer.new()
 	rows_box.add_theme_constant_override("separation", 10)
 	col.add_child(rows_box)
@@ -105,11 +124,13 @@ func refresh() -> void:
 			kind_name(kind), int(container.stock.get(kind, 0.0)), int(container.cap(kind)),
 			int(ant.carried(kind)), int(ant.carry_cap(kind))]
 
-# Everything you carry of this kind that fits.
+# The chosen amount of what you carry of this kind, as much as fits.
 func move_in(kind: String) -> void:
 	var have := ant.carried(kind)
 	var room := container.cap(kind) - float(container.stock.get(kind, 0.0))
 	var n := minf(have, room)
+	if amount > 0:
+		n = minf(n, float(amount))
 	if kind != "soil" and kind != "water":
 		n = floorf(n)
 	if n <= 0.0:
@@ -118,11 +139,13 @@ func move_in(kind: String) -> void:
 	container.stock[kind] = float(container.stock.get(kind, 0.0)) + n
 	refresh()
 
-# As much as you have room to carry.
+# The chosen amount of what it holds, as much as you have room to carry.
 func move_out(kind: String) -> void:
 	var stored := float(container.stock.get(kind, 0.0))
 	var room := ant.carry_cap(kind) - ant.carried(kind)
 	var n := minf(stored, room)
+	if amount > 0:
+		n = minf(n, float(amount))
 	if kind != "soil" and kind != "water":
 		n = floorf(n)
 	if n <= 0.0:

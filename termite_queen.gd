@@ -10,6 +10,11 @@ const SPAWN_INTERVAL := 22.0
 const WORKER_CAP := 10
 const SOLDIER_CAP := 8
 
+# The Great Mound's queen is shielded until you have gathered the biome relics.
+static var ward_up := true
+static var ward_message: Callable
+static var ward_cooldown := 0
+
 var colony: Dictionary
 var spawn_cb: Callable        # (colony, kind) -> void, set by main
 var timer := 8.0
@@ -17,13 +22,22 @@ var time := 0.0
 var abdomen: MeshInstance3D
 
 func _ready() -> void:
-	max_health = 400.0
+	max_health = 1500.0 if colony.get("great", false) else 400.0
 	hit_radius = 3.4
 	hit_offset = Vector3(0, 1.7, 1.0)
 	bar_height = 5.0
 	bar_scale = 2.0
 	super()
 	build_model()
+
+func take_damage(amount: float) -> void:
+	if colony.get("great", false) and ward_up:
+		var now := Time.get_ticks_msec()
+		if now > ward_cooldown and ward_message.is_valid():
+			ward_cooldown = now + 4000
+			ward_message.call()
+		return
+	super(amount)
 
 func loot_kind() -> String:
 	return ""   # main drops the colony's stores instead

@@ -153,7 +153,8 @@ func _ready() -> void:
 		health_label.position = Vector3(0, size.y * 0.5 + 0.35, 0)
 		add_child(health_label)
 		update_health_label()
-	elif type == "lamp":
+	elif type == "lamp" or type == "crystal_lamp":
+		var violet := type == "crystal_lamp"
 		# A small stand holding a glowing bead of firefly glow.
 		var base := MeshInstance3D.new()
 		var bm := CylinderMesh.new()
@@ -174,9 +175,9 @@ func _ready() -> void:
 		stem.position.y = -size.y * 0.15
 		add_child(stem)
 		var glow_mat := StandardMaterial3D.new()
-		glow_mat.albedo_color = Color(0.9, 1.0, 0.4)
+		glow_mat.albedo_color = Color(0.7, 0.65, 1.0) if violet else Color(0.9, 1.0, 0.4)
 		glow_mat.emission_enabled = true
-		glow_mat.emission = Color(0.7, 1.0, 0.2)
+		glow_mat.emission = Color(0.5, 0.4, 1.0) if violet else Color(0.7, 1.0, 0.2)
 		glow_mat.emission_energy_multiplier = 2.5
 		var bead := MeshInstance3D.new()
 		var gm := SphereMesh.new()
@@ -187,9 +188,9 @@ func _ready() -> void:
 		bead.position.y = size.y * 0.25
 		add_child(bead)
 		var light := OmniLight3D.new()
-		light.light_color = Color(0.8, 1.0, 0.35)
-		light.light_energy = 1.8
-		light.omni_range = 13.0
+		light.light_color = Color(0.6, 0.55, 1.0) if violet else Color(0.8, 1.0, 0.35)
+		light.light_energy = 2.4 if violet else 1.8
+		light.omni_range = 22.0 if violet else 13.0
 		light.shadow_enabled = false   # set true for shadows, but many lamps with shadows gets slow
 		light.position.y = size.y * 0.25
 		add_child(light)

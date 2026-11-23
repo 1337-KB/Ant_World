@@ -29,8 +29,10 @@ const MAX_HEALTH := 100.0
 # Dash: press Ctrl. Moving forward (or standing still) dashes at what is ahead and hurts what you hit.
 # Holding A, D or S dashes sideways or back instead, and you cannot be hurt for a moment.
 const DASH_KEY := KEY_CTRL
-const DASH_SPEED := 30.0
-const DASH_TIME := 0.22         # a dash covers about 6.6 units
+const DASH_SPEED := 40.0        # the peak speed of a dash
+const DASH_TIME := 0.24         # a dash covers about 7 units
+const DASH_RAMP := 0.15         # the first part of the dash eases up to full speed...
+const DASH_HOLD := 0.3          # ...stays at full speed until here, then eases back down to walking speed
 const DASH_COOLDOWN := 1.0
 const DASH_COST := 20.0         # energy
 const DASH_DAMAGE := 20.0       # forward dash damage for a worker. Soldiers multiply it (dash_dmg)
@@ -96,7 +98,7 @@ var energy := ENERGY_MAX      # sprint energy
 var exhausted := false       # true after running out, until energy recovers
 var sprinting := false
 var controls_locked := false   # true while a menu is open: no walking, jumping, or depositing
-var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0, "resin": 0}
+var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0, "resin": 0, "crystal": 0, "relic": 0}
 var soil := 0.0              # filled by digging
 var water := 0.0             # filled by drinking at pools
 var poison_time := 0.0        # seconds of poison left. Eating sugar cures it.
@@ -389,7 +391,10 @@ func _physics_process(delta: float) -> void:
 	if dash_time > 0.0:
 		dash_time -= delta
 		dir = dash_vec
-		speed = DASH_SPEED
+		# Eased: speeds up smoothly, then slows smoothly into your walking speed, so it never starts or stops with a jolt.
+		var p := clampf(1.0 - dash_time / DASH_TIME, 0.0, 1.0)
+		var burst := smoothstep(0.0, DASH_RAMP, p) * (1.0 - smoothstep(DASH_HOLD, 1.0, p))
+		speed = lerpf(speed, DASH_SPEED, burst)
 		if dash_forward:
 			dash_strike()
 

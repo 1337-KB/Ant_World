@@ -16,7 +16,7 @@ const RECIPES := {
 		"cost": {"fiber": 20},
 		"size": Vector3(1.6, 1.2, 1.6),
 		"color": Color(0.55, 0.36, 0.18),
-		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "glow": 100, "silk": 100, "resin": 100, "soil": 150},   # most one box holds of each
+		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "glow": 100, "silk": 100, "resin": 100, "crystal": 100, "relic": 20, "soil": 150},   # most one box holds of each
 	},
 	"barrel": {
 		"label": "Water barrel",
@@ -32,6 +32,13 @@ const RECIPES := {
 		"cost": {"glow": 3},
 		"size": Vector3(0.7, 1.0, 0.7),
 		"color": Color(0.85, 1.0, 0.3),
+	},
+	"crystal_lamp": {
+		"label": "Crystal lamp",
+		"desc": "A cool violet light that reaches much farther than a glow lamp. Made from cave crystals.",
+		"cost": {"crystal": 2},
+		"size": Vector3(0.7, 1.0, 0.7),
+		"color": Color(0.55, 0.5, 1.0),
 	},
 	"queen": {
 		"label": "Queen",
@@ -76,9 +83,10 @@ const RECIPES := {
 		"color": Color(0.55, 0.52, 0.5),
 	},
 }
-const ORDER := ["box", "barrel", "lamp", "queen", "trap", "resin_trap", "pit_trap", "acid_trap", "collapse_trap"]
+const ORDER := ["box", "barrel", "lamp", "crystal_lamp", "queen", "trap", "resin_trap", "pit_trap", "acid_trap", "collapse_trap"]
 
 var ant: Ant
+var progression: Progression   # decides which recipes are unlocked
 var items := {}              # item type -> how many you own
 var slots: Array = []        # hotbar: the item type in each slot, or ""
 var held_slot := -1          # the hotbar slot you are holding, or -1
@@ -102,7 +110,12 @@ func _process(_delta: float) -> void:
 
 # ---------- Items ----------
 
+func is_unlocked(type: String) -> bool:
+	return progression == null or progression.unlocked(type)
+
 func can_craft(type: String) -> bool:
+	if not is_unlocked(type):
+		return false
 	var cost: Dictionary = RECIPES[type]["cost"]
 	for k in cost:
 		if ant.inventory[k] < cost[k]:
@@ -238,6 +251,9 @@ func refresh_menu() -> void:
 		var ok := can_craft(type)
 		var cost_label: Label = rows[type]["cost"]
 		cost_label.text = "Needs: " + ",  ".join(parts)
+		if not is_unlocked(type):
+			cost_label.text = progression.locked_text(type)
+			ok = false
 		cost_label.add_theme_color_override("font_color", Color(0.5, 1.0, 0.5) if ok else Color(1.0, 0.5, 0.45))
 		(rows[type]["button"] as Button).disabled = not ok
 

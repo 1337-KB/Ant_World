@@ -8,6 +8,8 @@ const KINDS := {
 	"fiber":  {"label": "Leaf fiber", "color": Color(0.35, 0.75, 0.3), "size": 0.30, "slow": 0.20},
 	"silk":   {"label": "Spider silk", "color": Color(0.92, 0.92, 0.96), "size": 0.25, "slow": 0.0},
 	"resin":  {"label": "Resin", "color": Color(0.95, 0.6, 0.12), "size": 0.26, "slow": 0.0},
+	"crystal": {"label": "Cave crystal", "color": Color(0.55, 0.5, 1.0), "size": 0.3, "slow": 0.15},
+	"relic": {"label": "Biome relic", "color": Color(1.0, 0.88, 0.45), "size": 0.4, "slow": 0.0},
 	"glow":   {"label": "Firefly glow", "color": Color(0.85, 1.0, 0.3), "size": 0.22, "slow": 0.0},
 }
 
@@ -85,6 +87,83 @@ func _ready() -> void:
 			var silk_shape := SphereShape3D.new()
 			silk_shape.radius = s
 			col.shape = silk_shape
+		"crystal":
+			# A cluster of glowing violet spikes, found deep underground.
+			mat.roughness = 0.1
+			mat.emission_enabled = true
+			mat.emission = Color(0.45, 0.35, 1.0)
+			mat.emission_energy_multiplier = 1.6
+			for i in 4:
+				var spike := MeshInstance3D.new()
+				var cm2 := CylinderMesh.new()
+				cm2.top_radius = 0.0
+				cm2.bottom_radius = s * randf_range(0.35, 0.6)
+				cm2.height = s * randf_range(2.4, 4.0)
+				cm2.radial_segments = 5
+				cm2.rings = 1
+				spike.mesh = cm2
+				spike.material_override = mat
+				spike.position = Vector3(randf_range(-0.5, 0.5) * s, cm2.height * 0.4, randf_range(-0.5, 0.5) * s)
+				spike.rotation = Vector3(randf_range(-0.45, 0.45), randf() * TAU, randf_range(-0.45, 0.45))
+				visual.add_child(spike)
+			var glint := OmniLight3D.new()
+			glint.light_color = Color(0.55, 0.5, 1.0)
+			glint.light_energy = 0.9
+			glint.omni_range = 7.0
+			glint.shadow_enabled = false
+			glint.distance_fade_enabled = true
+			glint.distance_fade_begin = 35.0
+			glint.distance_fade_length = 15.0
+			glint.position.y = s * 1.5
+			visual.add_child(glint)
+			var cshape := SphereShape3D.new()
+			cshape.radius = s
+			col.shape = cshape
+		"relic":
+			# A glowing golden shard on a plinth, with a tall faint beam of light so it can be seen from far away.
+			mat.roughness = 0.1
+			mat.metallic = 0.6
+			mat.emission_enabled = true
+			mat.emission = Color(1.0, 0.8, 0.3)
+			mat.emission_energy_multiplier = 2.2
+			var shard := MeshInstance3D.new()
+			var sm2 := PrismMesh.new()
+			sm2.size = Vector3(s * 1.6, s * 3.2, s * 1.6)
+			shard.mesh = sm2
+			shard.material_override = mat
+			shard.position.y = s * 1.8
+			shard.rotation.y = randf() * TAU
+			visual.add_child(shard)
+			var beam_mat := StandardMaterial3D.new()
+			beam_mat.albedo_color = Color(1.0, 0.85, 0.4, 0.18)
+			beam_mat.emission_enabled = true
+			beam_mat.emission = Color(1.0, 0.8, 0.3)
+			beam_mat.emission_energy_multiplier = 1.4
+			beam_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			beam_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			beam_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+			var beam := MeshInstance3D.new()
+			var bm2 := CylinderMesh.new()
+			bm2.top_radius = 0.25
+			bm2.bottom_radius = 0.6
+			bm2.height = 90.0
+			bm2.radial_segments = 8
+			bm2.rings = 1
+			beam.mesh = bm2
+			beam.material_override = beam_mat
+			beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			beam.position.y = 45.0
+			add_child(beam)
+			var rlight := OmniLight3D.new()
+			rlight.light_color = Color(1.0, 0.85, 0.45)
+			rlight.light_energy = 1.6
+			rlight.omni_range = 14.0
+			rlight.shadow_enabled = false
+			rlight.position.y = s * 2.0
+			add_child(rlight)
+			var rshape := SphereShape3D.new()
+			rshape.radius = s
+			col.shape = rshape
 		"resin":
 			# A sticky amber drop that burns hot.
 			mat.roughness = 0.1
