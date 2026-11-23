@@ -39,6 +39,7 @@ var player_dir := Vector2(0, -1)
 var start_pos := Vector2(8, 8)
 var queen_pos := Vector2.INF
 var mounds: Array = []         # {"pos": Vector2, "dead": bool}
+var trail := PackedVector2Array()   # your pheromone drops, as world (x, z)
 var lakes: Array = []          # {"pos": Vector2, "radius": float, "outline": PackedVector2Array}
 var reveal_timer := 0.0
 
@@ -174,6 +175,12 @@ func _draw() -> void:
 		if ld < nearest_lake_d:
 			nearest_lake_d = ld
 			nearest_lake = i
+
+	# Your pheromone trail.
+	for tp in trail:
+		var ts: Vector2 = to_screen.call(tp)
+		if inside.call(ts):
+			draw_circle(ts, 2.5, Color(0.3, 1.0, 0.25, 0.85))
 
 	# Termite mounds you have spotted: red while the colony lives, grey once it is finished.
 	var nearest := -1

@@ -18,6 +18,10 @@ var abdomen: MeshInstance3D
 
 func _ready() -> void:
 	max_health = 400.0
+	hit_radius = 3.4
+	hit_offset = Vector3(0, 1.7, 1.0)
+	bar_height = 5.0
+	bar_scale = 2.0
 	super()
 	build_model()
 

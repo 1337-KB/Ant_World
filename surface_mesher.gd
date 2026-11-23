@@ -108,8 +108,23 @@ static func _pidx(x: int, y: int, z: int) -> int:
 static func _cidx(c: Vector3i) -> int:
 	return (c.x + 1) + (c.z + 1) * CS + (c.y + 1) * CS * CS
 
+# The 27 chunks around one (itself in the middle), looked up once. The meshing works from this
+# list alone, so it can run on a worker thread without touching the world while the game edits it.
+static func neighbors_of(world: World, cpos: Vector3i) -> Array:
+	var near: Array = []
+	for oy in range(-1, 2):
+		for oz in range(-1, 2):
+			for ox in range(-1, 2):
+				near.append(world.get_chunk(cpos + Vector3i(ox, oy, oz)))
+	return near
+
 static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 	if world.get_chunk(cpos) == null:
+		return null
+	return build_with(neighbors_of(world, cpos), cpos)
+
+static func build_with(near: Array, cpos: Vector3i) -> ArrayMesh:
+	if near[13] == null:
 		return null
 	var origin := cpos * SIZE
 
@@ -131,13 +146,7 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 	mats.resize(PAD * PAD * PAD)
 	var any_solid := false
 	var any_air := false
-	# Fetch the 3x3x3 neighbor chunks once, then read samples straight from them.
-	# (Asking the world for every sample was the slow part of remeshing.)
-	var near: Array = []
-	for oy in range(-1, 2):
-		for oz in range(-1, 2):
-			for ox in range(-1, 2):
-				near.append(world.get_chunk(cpos + Vector3i(ox, oy, oz)))
+	var i := 0
 	for y in range(-1, SIZE + 1):
 		var cy := 0 if y >= 0 and y < SIZE else (-1 if y < 0 else 1)
 		var ly := y - cy * SIZE
@@ -147,19 +156,20 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 			for x in range(-1, SIZE + 1):
 				var cx := 0 if x >= 0 and x < SIZE else (-1 if x < 0 else 1)
 				var lx := x - cx * SIZE
-				var i := _pidx(x, y, z)
 				var ch = near[(cx + 1) + (cz + 1) * 3 + (cy + 1) * 9]
 				var d := -1.0
 				var m := Blocks.AIR
 				if ch != null:
-					d = ch.get_density(lx, ly, lz)
-					m = ch.get_material(lx, ly, lz)
+					var ci := lx + lz * SIZE + ly * SIZE * SIZE   # lx, ly, lz are always inside the chunk here
+					d = ch.density[ci]
+					m = ch.material[ci]
 				dens[i] = d
 				mats[i] = m
 				if d > 0.0:
 					any_solid = true
 				else:
 					any_air = true
+				i += 1
 
 	# All solid or all air means there is no surface here, so skip the meshing.
 	if not (any_solid and any_air):
@@ -175,19 +185,33 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 	cell_vertex.resize(CS * CS * CS)
 	cell_vertex.fill(-1)
 	var cd: Array[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+	var pp := PAD * PAD
+	var offs := [0, 1, pp, pp + 1, PAD, PAD + 1, pp + PAD, pp + PAD + 1]   # the 8 corners as steps in the sample array
 
 	for cy in range(-1, SIZE):
 		for cz in range(-1, SIZE):
+			var row := (cz + 1) * PAD + (cy + 1) * pp + 1
 			for cx in range(-1, SIZE):
-				var solid_count := 0
-				for i in 8:
-					var c: Vector3i = CORNERS[i]
-					var v := dens[_pidx(cx + c.x, cy + c.y, cz + c.z)]
-					cd[i] = v
-					if v > 0.0:
-						solid_count += 1
+				var b := row + cx
+				var d0 := dens[b]
+				var d1 := dens[b + 1]
+				var d2 := dens[b + pp]
+				var d3 := dens[b + pp + 1]
+				var d4 := dens[b + PAD]
+				var d5 := dens[b + PAD + 1]
+				var d6 := dens[b + pp + PAD]
+				var d7 := dens[b + pp + PAD + 1]
+				var solid_count := int(d0 > 0.0) + int(d1 > 0.0) + int(d2 > 0.0) + int(d3 > 0.0) + int(d4 > 0.0) + int(d5 > 0.0) + int(d6 > 0.0) + int(d7 > 0.0)
 				if solid_count == 0 or solid_count == 8:
 					continue  # entirely air or entirely solid: no surface here
+				cd[0] = d0
+				cd[1] = d1
+				cd[2] = d2
+				cd[3] = d3
+				cd[4] = d4
+				cd[5] = d5
+				cd[6] = d6
+				cd[7] = d7
 
 				# Average the points where the surface crosses the cell's edges.
 				var sum := Vector3.ZERO
@@ -216,13 +240,12 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 				# Material comes from the most solid corner.
 				var best := -INF
 				var mat := Blocks.STONE
-				for i in 8:
-					if cd[i] > best:
-						best = cd[i]
-						var c: Vector3i = CORNERS[i]
-						mat = mats[_pidx(cx + c.x, cy + c.y, cz + c.z)]
+				for k in 8:
+					if cd[k] > best:
+						best = cd[k]
+						mat = mats[b + int(offs[k])]
 
-				cell_vertex[_cidx(Vector3i(cx, cy, cz))] = verts.size()
+				cell_vertex[(cx + 1) + (cz + 1) * CS + (cy + 1) * CS * CS] = verts.size()
 				verts.append(pos)
 				normals.append(normal)
 				var wp := Vector3(origin) + pos
@@ -233,10 +256,11 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 	for y in SIZE:
 		for z in SIZE:
 			for x in SIZE:
-				var solid_a := dens[_pidx(x, y, z)] > 0.0
+				var pb := (x + 1) + (z + 1) * PAD + (y + 1) * pp
+				var solid_a := dens[pb] > 0.0
 				for axis in 3:
-					var e: Vector3i = AXES[axis]
-					var solid_b := dens[_pidx(x + e.x, y + e.y, z + e.z)] > 0.0
+					var step := 1 if axis == 0 else (pp if axis == 1 else PAD)
+					var solid_b := dens[pb + step] > 0.0
 					if solid_a == solid_b:
 						continue
 					var eu: Vector3i = AXES[(axis + 1) % 3]
@@ -247,8 +271,10 @@ static func build(world: World, cpos: Vector3i) -> ArrayMesh:
 					var q2 := cell_vertex[_cidx(p)]
 					var q3 := cell_vertex[_cidx(p - eu)]
 					# Flip the order so the face always points from solid to air.
-					var o := [q0, q3, q2, q1] if solid_a else [q0, q1, q2, q3]
-					indices.append_array([o[0], o[1], o[2], o[0], o[2], o[3]])
+					if solid_a:
+						indices.append_array(PackedInt32Array([q0, q3, q2, q0, q2, q1]))
+					else:
+						indices.append_array(PackedInt32Array([q0, q1, q2, q0, q2, q3]))
 
 	if indices.is_empty():
 		return null

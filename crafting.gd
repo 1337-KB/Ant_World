@@ -47,8 +47,36 @@ const RECIPES := {
 		"size": Vector3(2.6, 0.3, 2.6),
 		"color": Color(0.92, 0.95, 1.0),
 	},
+	"resin_trap": {
+		"label": "Resin trap",
+		"desc": "A sticky pool of resin. Any creature that steps in is held for 8 seconds. Catches 4, then hardens.",
+		"cost": {"resin": 6},
+		"size": Vector3(2.6, 0.3, 2.6),
+		"color": Color(0.95, 0.6, 0.12),
+	},
+	"pit_trap": {
+		"label": "Pit trap",
+		"desc": "A hole covered with fiber. Whatever falls in is stuck for 6 seconds and takes 25 damage. Three uses.",
+		"cost": {"fiber": 10, "pebble": 4},
+		"size": Vector3(2.4, 0.3, 2.4),
+		"color": Color(0.3, 0.22, 0.14),
+	},
+	"acid_trap": {
+		"label": "Acid trap",
+		"desc": "Bursts when stepped on and burns every creature nearby for 60 damage. Two uses.",
+		"cost": {"resin": 4, "glow": 2},
+		"size": Vector3(2.4, 0.3, 2.4),
+		"color": Color(0.45, 0.9, 0.2),
+	},
+	"collapse_trap": {
+		"label": "Collapse trap",
+		"desc": "Seals a tunnel. When something steps on it, soil drops from the ceiling and buries the spot, hurting nearby creatures for 40. One use. You can dig through it later.",
+		"cost": {"pebble": 8, "fiber": 6},
+		"size": Vector3(2.4, 0.3, 2.4),
+		"color": Color(0.55, 0.52, 0.5),
+	},
 }
-const ORDER := ["box", "barrel", "lamp", "queen", "trap"]
+const ORDER := ["box", "barrel", "lamp", "queen", "trap", "resin_trap", "pit_trap", "acid_trap", "collapse_trap"]
 
 var ant: Ant
 var items := {}              # item type -> how many you own

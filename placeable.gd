@@ -25,6 +25,20 @@ const TRAP_HOLD_SECONDS := 4.0
 var uses_left := TRAP_USES
 var web: Node3D
 
+# Defense traps (resin, pit, acid, collapse). Unlike the silk trap, these watch for creatures
+# themselves. "hold" is how long a creature is stuck, "burst" is the radius of an area blast.
+const DEFENSE := {
+	"resin_trap": {"uses": 4, "radius": 1.6, "hold": 8.0},
+	"pit_trap": {"uses": 3, "radius": 1.3, "hold": 6.0, "damage": 25.0},
+	"acid_trap": {"uses": 2, "radius": 1.5, "burst": 3.4, "damage": 60.0},
+	"collapse_trap": {"uses": 1, "radius": 1.4, "burst": 3.2, "damage": 40.0},
+}
+signal collapsed(center: Vector3, radius: float)
+var defense_uses := 0
+var defense_timer := 0.0
+var caught := {}          # creature id -> when it can set this trap off again
+var trap_vis: Node3D
+
 # Gravity. If the ground under a placed item is dug away, it falls until something holds it.
 signal moved(p: Placeable)
 const FALL_GRAVITY := 28.0
@@ -36,7 +50,7 @@ var support_timer := randf() * 0.3
 var falling := false
 
 func _ready() -> void:
-	collision_layer = 0 if type == "trap" else 5   # layers 1 and 4, same as building pieces. Traps are walked over.
+	collision_layer = 0 if (type == "trap" or DEFENSE.has(type)) else 5   # layers 1 and 4, same as building pieces. Traps are walked over.
 	collision_mask = 0
 
 	var info: Dictionary = Crafting.RECIPES[type]
@@ -97,6 +111,10 @@ func _ready() -> void:
 			ring.position.y = -size.y * 0.3
 			web.add_child(ring)
 		return   # no collision shape: ants and spiders walk straight over it
+	if DEFENSE.has(type):
+		defense_uses = int(DEFENSE[type]["uses"])
+		build_defense_visual(size)
+		return   # no collision shape: everything walks straight over it
 	if type == "queen":
 		var skin := StandardMaterial3D.new()
 		skin.albedo_color = info["color"]
@@ -223,6 +241,136 @@ func _ready() -> void:
 	col.shape = shape
 	add_child(col)
 
+func trap_disc(radius: float, y: float, color: Color, glow: float = 0.0) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = radius
+	cm.bottom_radius = radius
+	cm.height = 0.05
+	mi.mesh = cm
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.roughness = 0.4
+	if glow > 0.0:
+		m.emission_enabled = true
+		m.emission = color
+		m.emission_energy_multiplier = glow
+	mi.material_override = m
+	mi.position.y = y
+	trap_vis.add_child(mi)
+	return mi
+
+func trap_blob(radius: float, pos: Vector3, color: Color, glow: float = 0.0) -> void:
+	var mi := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = radius
+	sm.height = radius * 2.0
+	mi.mesh = sm
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.roughness = 0.5
+	if glow > 0.0:
+		m.emission_enabled = true
+		m.emission = color
+		m.emission_energy_multiplier = glow
+	mi.material_override = m
+	mi.position = pos
+	trap_vis.add_child(mi)
+
+func build_defense_visual(size: Vector3) -> void:
+	trap_vis = Node3D.new()
+	add_child(trap_vis)
+	var y := -size.y * 0.35
+	var r: float = float(DEFENSE[type]["radius"])
+	match type:
+		"resin_trap":
+			trap_disc(r * 0.95, y, Color(0.9, 0.55, 0.1, 1.0), 0.5)
+			trap_blob(0.35, Vector3(0.5, y + 0.1, 0.2), Color(1.0, 0.7, 0.2), 0.7)
+			trap_blob(0.25, Vector3(-0.4, y + 0.08, -0.5), Color(1.0, 0.7, 0.2), 0.7)
+			trap_blob(0.2, Vector3(-0.3, y + 0.07, 0.6), Color(1.0, 0.75, 0.25), 0.7)
+		"pit_trap":
+			trap_disc(r * 1.05, y, Color(0.32, 0.23, 0.14))
+			trap_disc(r * 0.8, y + 0.03, Color(0.04, 0.03, 0.02))
+			for i in 8:
+				var a := TAU * float(i) / 8.0
+				trap_blob(0.12, Vector3(cos(a) * r * 0.85, y + 0.08, sin(a) * r * 0.85), Color(0.4, 0.3, 0.18))
+		"acid_trap":
+			trap_disc(r * 0.95, y, Color(0.4, 0.9, 0.15), 1.1)
+			trap_blob(0.22, Vector3(0.4, y + 0.12, 0.1), Color(0.6, 1.0, 0.3), 1.6)
+			trap_blob(0.16, Vector3(-0.35, y + 0.1, -0.3), Color(0.6, 1.0, 0.3), 1.6)
+			trap_blob(0.14, Vector3(0.1, y + 0.1, -0.55), Color(0.6, 1.0, 0.3), 1.6)
+			var light := OmniLight3D.new()
+			light.light_color = Color(0.5, 1.0, 0.25)
+			light.light_energy = 0.8
+			light.omni_range = 5.0
+			light.shadow_enabled = false
+			light.position.y = y + 0.5
+			trap_vis.add_child(light)
+		"collapse_trap":
+			for i in 7:
+				var a := TAU * float(i) / 7.0
+				trap_blob(randf_range(0.28, 0.45), Vector3(cos(a) * 0.55, y + 0.15, sin(a) * 0.55), Color(0.5, 0.48, 0.46).darkened(randf_range(0.0, 0.25)))
+			trap_blob(0.5, Vector3(0, y + 0.25, 0), Color(0.55, 0.52, 0.5))
+
+# Looks for creatures standing on the trap, a few times a second.
+func tick_defense(delta: float) -> void:
+	if defense_uses <= 0:
+		return
+	defense_timer -= delta
+	if defense_timer > 0.0:
+		return
+	defense_timer = 0.1
+	var info: Dictionary = DEFENSE[type]
+	var r: float = info["radius"]
+	var now := Time.get_ticks_msec() / 1000.0
+	for c in get_tree().get_nodes_in_group("creatures"):
+		var cr := c as Creature
+		if cr == null or cr is Firefly or not cr.active:
+			continue
+		var off := cr.global_position - global_position
+		if Vector2(off.x, off.z).length() > r or absf(off.y) > 2.0:
+			continue
+		var id := cr.get_instance_id()
+		if float(caught.get(id, 0.0)) > now:
+			continue
+		caught[id] = now + float(info.get("hold", 1.0)) + 2.5
+		spring(cr)
+		if defense_uses <= 0:
+			return
+
+func hold_creature(cr: Creature, seconds: float) -> void:
+	if "stuck_time" in cr:
+		cr.set("stuck_time", seconds)
+		cr.set("web_immunity", seconds + 2.5)
+
+# A creature stepped on the trap.
+func spring(cr: Creature) -> void:
+	defense_uses -= 1
+	var info: Dictionary = DEFENSE[type]
+	match type:
+		"resin_trap":
+			hold_creature(cr, float(info["hold"]))
+		"pit_trap":
+			hold_creature(cr, float(info["hold"]))
+			cr.take_damage(float(info["damage"]))
+		"acid_trap", "collapse_trap":
+			var burst: float = info["burst"]
+			for c in get_tree().get_nodes_in_group("creatures"):
+				var other := c as Creature
+				if other == null or other is Firefly or not other.active:
+					continue
+				var off := other.global_position - global_position
+				if Vector2(off.x, off.z).length() <= burst and absf(off.y) < 3.0:
+					other.take_damage(float(info["damage"]))
+			if type == "collapse_trap":
+				collapsed.emit(global_position + Vector3.UP * 1.2, 2.4)
+	var frac := float(defense_uses) / float(info["uses"])
+	if defense_uses <= 0:
+		trap_vis.scale = Vector3.ONE * 0.5
+		get_tree().create_timer(3.0 if type == "resin_trap" else 1.0).timeout.connect(queue_free)
+	else:
+		trap_vis.scale = Vector3.ONE * (0.6 + 0.4 * frac)
+
 # A spider touched the web. Returns true if it got stuck. The web shrinks as it wears out.
 func try_catch() -> bool:
 	if type != "trap" or uses_left <= 0:
@@ -271,6 +419,8 @@ func supported() -> bool:
 	return false
 
 func _physics_process(delta: float) -> void:
+	if DEFENSE.has(type):
+		tick_defense(delta)
 	if world == null:
 		return
 	if not falling:

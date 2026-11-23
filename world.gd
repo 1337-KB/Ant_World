@@ -2,7 +2,7 @@ class_name World
 extends RefCounted
 
 # Nothing below this height can be dug or smoothed, so the world has a floor.
-const BEDROCK_Y := 3
+const BEDROCK_Y := -77
 
 var chunks := {}
 var last_removed := 0.0   # volume of ground removed by the latest dig

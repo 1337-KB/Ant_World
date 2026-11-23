@@ -427,7 +427,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	collect_nearby()
 
-	if global_position.y < -20.0:
+	if global_position.y < -120.0:
 		respawn()
 
 func start_dash() -> void:
@@ -462,7 +462,7 @@ func dash_strike() -> void:
 		var c := node as Creature
 		if c == null or not c.active or dash_hit.has(c):
 			continue
-		if (c.global_position + Vector3(0, 0.5, 0)).distance_to(center) < DASH_HIT_RADIUS:
+		if (c.hit_center() + Vector3(0, 0.5, 0)).distance_to(center) < DASH_HIT_RADIUS + c.hit_radius:
 			dash_hit.append(c)
 			c.take_damage(dmg)
 			dash_hit_creature.emit(c)
@@ -672,5 +672,5 @@ func swim(delta: float, depth: float) -> void:
 	velocity = velocity.lerp(target, minf(1.0, 5.0 * delta))
 	move_and_slide()
 	collect_nearby()
-	if global_position.y < -20.0:
+	if global_position.y < -120.0:
 		respawn()

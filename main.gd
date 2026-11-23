@@ -32,7 +32,9 @@ const BIOME_RESOURCES := [                             # what the resource sites
 const HALF := 7200   # the world is 2 * HALF units across (multiple of 16). 7200 is about 20 minutes of walking from the start to the river.
 const LAND := HALF - 24   # trees, pools, grass... stay inside this, clear of the river
 const BIOME_FREQ := 0.002   # lower = bigger biomes. 0.002 means a biome is roughly 500 units across.
-const HEIGHT_CHUNKS := 6      # the world is 16 * this many units tall (termite mounds are tall)
+const HEIGHT_CHUNKS := 6      # chunks stack up to this layer, so the top of the world is 16 * this high (termite mounds are tall)
+const CY_MIN := -5            # and down to this layer, so the ground is about three times as deep (the bottom is 16 * this)
+const CAVE_THRESHOLD := 0.5   # higher = fewer, smaller caves
 const SURFACE_BASE := 44.0     # roughly how high the ground surface sits
 const POCKET_MIN_DEPTH := 22.0   # underground water starts at least this far below the surface
 const POOL_CELL := 256         # the world is split into squares this big; each may hold one surface pool
@@ -53,10 +55,11 @@ const SPIDERS_PER_REGION := 0.3
 const BEETLES_PER_REGION := 0.3
 const CENTIPEDES_PER_REGION := 0.25
 const REGION_BUDGET_MS := 4.0   # time per frame spent building region content
+const ROYAL_WALL := 6.0          # how thick the undiggable walls around a living queen's cell are
 const MOUND_CELL := 320         # the world is split into squares this big; each may hold a termite mound
 const MOUND_CHANCE := [0.35, 0.4, 0.15, 0.0, 0.25, 0.9]   # per biome: forest, desert, highlands, tundra, swamp, savanna
 const MOUND_START_CLEAR := 150.0    # no mounds this close to the start, and rarer out to 700
-const EVICT_COLS := 14.0         # terrain farther than this many columns (16 units each) away is forgotten, unless you dug it
+const EVICT_COLS := 24.0         # terrain farther than this many columns (16 units each) away is forgotten, unless you dug it
 const GRASS_MIN_HEIGHT := 0.8
 const GRASS_MAX_HEIGHT := 2.0
 const PEBBLE_SOLID_MIN := 0.5   # pebbles at least this big are solid; smaller ones you walk over
@@ -82,18 +85,23 @@ const ROCK_COOLDOWN := 0.55
 const ACID_DRAIN := 25.0               # acid used per second of spraying
 const ACID_REGEN := 12.0               # acid regained per second when not spraying
 # World streaming: terrain is generated and drawn in columns of 16 x 16 units around the ant.
-const DATA_RADIUS := 11       # columns of terrain data kept generated around the ant
-const MESH_RADIUS := 9        # columns actually drawn (about 144 units)
+const DATA_RADIUS := 20       # columns of terrain data kept generated around the ant
+const MESH_RADIUS := 17       # columns actually drawn (about 272 units)
 const COLLISION_COLS := 7.0   # only ground this close is solid; farther ground is just a picture, which is much cheaper
-const TERRAIN_FADE_START := 70.0   # the detailed ground starts to thin out here...
-const TERRAIN_FADE_END := 105.0    # ...and is gone here, where the distant land takes over
-const TREE_FADE_END := 98.0         # trees and rocks fade out by about here
-const GRASS_FADE_START := 50.0
-const GRASS_FADE_END := 78.0
-const GRASS_COLS := 7.0       # grass and pebbles are drawn only this close (there are far too many to draw all the way out)
+const TERRAIN_FADE_START := 200.0   # the detailed ground starts to thin out here...
+const TERRAIN_FADE_END := 262.0    # ...and is gone here, where the distant land takes over
+const TREE_FADE_END := 170.0        # trees and rocks fade out by about here
+const GRASS_FADE_START := 60.0
+const GRASS_FADE_END := 95.0
+const GRASS_COLS := 8.0       # grass and pebbles are drawn only this close (there are far too many to draw all the way out)
+# The deep ground is only generated when you are near it. Far columns get just the surface layers,
+# which is what you see, so the land ahead of you appears much faster.
+const DEEP_COLS := 5.0          # columns around you whose deep ground is generated too
+const DEEP_SHALLOW := 24.0      # a far column is generated this far below its lowest ground
+const DEEP_NEAR_MOUND := 62.0   # near a termite mound it goes much deeper, because the colony lives there
 const ACTIVE_COLS := 4.0      # creatures only move and think this close
 const REGION_SIZE := 32.0     # grass, rocks and trees are grouped in squares this big, shown only near the ant
-const GEN_BUDGET_MS := 4.0    # time per frame spent generating terrain data
+const GEN_BUDGET_MS := 8.0    # time per frame spent generating terrain data
 const DAY_LENGTH := 600.0              # seconds for a full day and night (10 minutes)
 const SPIDER_RESPAWN_SECONDS := 120.0
 const BEETLE_RESPAWN_SECONDS := 150.0
@@ -204,6 +212,7 @@ var pocket_noise := FastNoiseLite.new()
 var patch_noise2 := FastNoiseLite.new()
 var soil_noise := FastNoiseLite.new()
 var soil_noise2 := FastNoiseLite.new()
+var cave_noise := FastNoiseLite.new()
 var pockets := []   # water pockets: {pos, radii, rmin, level}
 var rivers := []    # the river around the world, in short pieces
 var pools := []     # surface pools: {x, z, radius, depth, rim, stock, ...}
@@ -265,6 +274,7 @@ var fire_cd := 0.0
 var res_panel: PanelContainer
 var res_rows := {}   # kind -> {"carry": Label, "stored": Label}
 var world_map: WorldMap
+var pheromone: Pheromone
 var sky_life: SkyLife
 var far_terrain: FarTerrain
 var show_help := false   # F1 toggles the full controls list
@@ -285,6 +295,8 @@ var decor_sets := []
 # Digging state
 var dig_cooldown := 0.0
 var remesh_queue: Array[Vector3i] = []   # chunks waiting to be rebuilt
+var remesh_set := {}                    # the same chunks, for a quick 'is it already waiting' check
+var remesh_focus := Vector3.ZERO        # the chunks nearest this point are rebuilt first
 var dig_lock := false   # after placing or menu use, ignore the held button until it is released
 var dig_hold := -1.0   # -1 while no button is held
 var has_last_dig := false
@@ -317,12 +329,18 @@ func _ready() -> void:
 
 	ant = Ant.new()
 	add_child(ant)
+	pheromone = Pheromone.new()
+	pheromone.ant = ant
+	add_child(pheromone)
 	sky_life = SkyLife.new()
 	add_child(sky_life)
 	far_terrain = FarTerrain.new()
 	far_terrain.height_fn = ground_height
 	far_terrain.kind_fn = surface_kind
 	far_terrain.edge_fn = edge_dist
+	far_terrain.biome_fn = biome_at
+	far_terrain.lake_fn = far_lake_level
+	far_terrain.mounds_fn = far_mounds
 	far_terrain.river_width = float(RIVER_WIDTH)
 	far_terrain.river_level = RIVER_LEVEL
 	add_child(far_terrain)
@@ -419,9 +437,11 @@ func _process(delta: float) -> void:
 				if ant.role == 1:
 					text += "   [Y] soil to rock   [V] throw rock"
 				text += "\n"
-				text += "[Shift] sprint   [C] craft   [1-9] hold item   [B] build   [M] map   [N] skip 3 hours   [K] respawn   [F1] hide help"
+				text += "[Shift] sprint   [C] craft   [1-9] hold item   [B] build   [M] map   [L] pheromone trail   [O] wipe trail   [N] skip 3 hours   [K] respawn   [F1] hide help"
 			else:
 				text += "[F1] controls   [M] map   [C] craft   [B] build"
+			if pheromone.laying:
+				text += "\nTRAIL ON  ([L] to stop)"
 
 	if not water_source.is_empty():
 		text += "\n[Hold F] drink water"
@@ -567,6 +587,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				day_time = fposmod(day_time + 0.125, 1.0)
 			KEY_M:
 				world_map.visible = not world_map.visible
+			KEY_L:
+				if pheromone.toggle():
+					show_message("Pheromone trail ON. You are leaving a faint scent mist. Press L to stop.")
+				else:
+					show_message("Pheromone trail off. Your old trail fades over time.")
+			KEY_O:
+				pheromone.clear_trail()
+				show_message("Your trail was wiped away.")
 			KEY_P:
 				TermiteSoldier.passive = not TermiteSoldier.passive
 				show_message("Termite soldiers are now passive. They will not attack." if TermiteSoldier.passive else "Termite soldiers are hostile again.")
@@ -787,6 +815,15 @@ func is_protected(point: Vector3, radius: float) -> bool:
 	if edge_dist(point.x, point.z) < RIVER_WIDTH + radius and top > RIVER_BED_Y - POOL_LOCK_DEPTH and bottom < RIVER_LEVEL + 0.5:
 		return true   # the riverbed stays, so the river keeps its water
 
+	# The royal cell has thick walls while its colony lives: the only way in is the guarded antechamber.
+	var mm := mound_near(point.x, point.z)
+	if not mm.is_empty() and not bool(mm["dead"]):
+		var rc: Vector3 = mm["royal"]
+		var rr: Vector3 = mm["royal_r"]
+		var rq := Vector3((point.x - rc.x) / rr.x, (point.y - rc.y) / rr.y, (point.z - rc.z) / rr.z)
+		if (rq.length() - 1.0) * 6.6 < ROYAL_WALL + radius:
+			return true
+
 	for p in pockets_at_cell(Vector2i(floori(point.x / POCKET_CELL), floori(point.z / POCKET_CELL))):
 		var pos: Vector3 = p["pos"]
 		var r: Vector3 = p["radii"]
@@ -880,6 +917,8 @@ func place_item() -> void:
 	p.type = held
 	p.world = world
 	p.moved.connect(_on_placeable_moved)
+	if Placeable.DEFENSE.has(held):
+		p.collapsed.connect(_on_trap_collapsed)
 	add_child(p)
 	p.global_transform = ghost_xform
 	if held == "queen":
@@ -891,6 +930,20 @@ func place_item() -> void:
 	crafting.consume_held()
 
 var queen_alarm_cd := 0.0
+
+# A collapse trap went off: soil drops and fills the spot, sealing the tunnel.
+func _on_trap_collapsed(center: Vector3, radius: float) -> void:
+	if ant.global_position.distance_to(center) < radius + 1.6:
+		show_message("A collapse trap went off beside you, but you were too close for it to bury the tunnel.")
+		return
+	var dirty := world.fill_sphere(center, radius)
+	if dirty.is_empty():
+		return
+	mark_edited(dirty)
+	queue_remesh(dirty, center)
+	wake_pickups(center, radius + 1.0)
+	mark_water_dirty(center, radius + 1.0)
+	show_message("A collapse trap sealed the tunnel!")
 
 # A placed item fell after the ground under it was dug away. If it is the queen, respawn moves with her.
 func _on_placeable_moved(p: Placeable) -> void:
@@ -1057,6 +1110,10 @@ func setup_noise() -> void:
 	patch_noise2.frequency = 0.05
 
 	# Random pockets of different earth underground: one big-scale, one smaller.
+	cave_noise.seed = 404
+	cave_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	cave_noise.frequency = 0.045
+	cave_noise.fractal_octaves = 3
 	soil_noise.seed = 301
 	soil_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	soil_noise.frequency = 0.07
@@ -1202,6 +1259,7 @@ func gen_column_cache(col: Vector2i) -> Dictionary:
 	hs.resize(size * size)
 	ks.resize(size * size)
 	var top := -1000.0
+	var low := 1000.0
 	for lx in size:
 		for lz in size:
 			var x := col.x * size + lx
@@ -1210,7 +1268,35 @@ func gen_column_cache(col: Vector2i) -> Dictionary:
 			hs[lx * size + lz] = gh
 			ks[lx * size + lz] = surface_kind(x, z)
 			top = maxf(top, gh)
-	return {"h": hs, "k": ks, "max": top}
+			low = minf(low, gh)
+	return {"h": hs, "k": ks, "max": top, "min": low}
+
+# The lowest chunk layer a column gets generated down to before you are near it.
+var col_deep_from := {}   # column -> its lowest generated layer (CY_MIN once the deep ground is done too)
+var deep_wanted: Array = []
+
+func shallow_layer(col: Vector2i, cache: Dictionary) -> int:
+	var margin := DEEP_SHALLOW
+	var mx := (float(col.x) + 0.5) * Chunk.SIZE
+	var mz := (float(col.y) + 0.5) * Chunk.SIZE
+	var ms := mound_site(Vector2i(floori(mx / MOUND_CELL), floori(mz / MOUND_CELL)))
+	if not ms.is_empty() and Vector2(mx - float(ms["x"]), mz - float(ms["z"])).length() < float(ms["R"]) + 60.0:
+		margin = DEEP_NEAR_MOUND
+	return clampi(floori((float(cache["min"]) - margin) / Chunk.SIZE), CY_MIN, HEIGHT_CHUNKS - 1)
+
+# The deep ground of a column was just generated, so it and its neighbors are drawn again to include it.
+func finish_deep(col: Vector2i) -> void:
+	col_deep_from[col] = CY_MIN
+	var list: Array = []
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var n := col + Vector2i(dx, dz)
+			if col_meshed.has(n):
+				for cy in range(CY_MIN, HEIGHT_CHUNKS):
+					if world.chunks.has(Vector3i(n.x, cy, n.y)):
+						list.append(Vector3i(n.x, cy, n.y))
+	if not list.is_empty():
+		queue_remesh(list, remesh_focus)
 
 # Fills one chunk straight from the height function. Chunks that are all open
 # air are never created, so the empty sky costs nothing.
@@ -1225,6 +1311,19 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 		return   # all open sky
 	var dead_mound: bool = mound.get("dead", false)
 	var chunk: Chunk = null
+	var all_solid := true   # stays true while every voxel in this chunk is fully solid
+	# The deep earth and the caves change slowly, so their noise is sampled once per 2x2x2 block of voxels, not once per voxel.
+	var blk := size / 2
+	var blk_have := PackedByteArray()
+	var blk_a := PackedFloat32Array()
+	var blk_b := PackedFloat32Array()
+	var blk_p := PackedFloat32Array()
+	var blk_c := PackedFloat32Array()
+	blk_have.resize(blk * blk * blk)
+	blk_a.resize(blk * blk * blk)
+	blk_b.resize(blk * blk * blk)
+	blk_p.resize(blk * blk * blk)
+	blk_c.resize(blk * blk * blk)
 	var hs: PackedFloat32Array = cache["h"]
 	var ks: PackedInt32Array = cache["k"]
 	for lx in size:
@@ -1244,14 +1343,35 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 						depth = md
 						in_mound = true
 				if depth <= -1.0:
+					all_solid = false
 					continue   # open air; a new chunk already starts as air
 				if chunk == null:
 					chunk = world.get_or_create_chunk(cpos)
 				var dens := clampf(depth, -1.0, 1.0)
 				var mat := Blocks.AIR
+				var bi := (lx >> 1) + (lz >> 1) * blk + (ly >> 1) * blk * blk
+				if depth >= 12.0 and not in_mound and blk_have[bi] == 0:
+					var sx := float(origin.x + (lx & ~1)) + 1.0
+					var sy := float(origin.y + (ly & ~1)) + 1.0
+					var sz := float(origin.z + (lz & ~1)) + 1.0
+					blk_a[bi] = soil_noise.get_noise_3d(sx, sy, sz)
+					blk_b[bi] = soil_noise2.get_noise_3d(sx, sy, sz)
+					blk_p[bi] = pocket_noise.get_noise_3d(sx, sy, sz)
+					blk_c[bi] = cave_noise.get_noise_3d(sx, sy * 1.6, sz)
+					blk_have[bi] = 1
 				if depth > 0.0:
 					if in_mound:
 						mat = Blocks.DEAD_MOUND if dead_mound else Blocks.MOUND
+					elif depth >= 12.0:
+						# Deep ground: the same rules as soil_at, from the block's noise.
+						if depth < 30.0 and blk_p[bi] > 0.45:
+							mat = Blocks.CLAY
+						elif blk_b[bi] > 0.6:
+							mat = Blocks.GRAVEL
+						elif blk_a[bi] > 0.55:
+							mat = Blocks.CHALK
+						else:
+							mat = Blocks.STONE
 					else:
 						mat = soil_at(x, y, z, depth, kind, under)
 
@@ -1267,6 +1387,14 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 				if damp and dens > 0.0:
 					mat = Blocks.MUD
 
+				# Caves: random pockets of air deep underground, wide and low, never open to the surface.
+				if not in_mound and depth > 10.0 and y > World.BEDROCK_Y + 4:
+					# Most of the ground is nowhere near a cave, which the block's rough value shows, so only look closely near one.
+					if depth < 12.0 or blk_c[bi] > CAVE_THRESHOLD - 0.25:
+						var cave_n := cave_noise.get_noise_3d(float(x), float(y) * 1.6, float(z))
+						if cave_n > CAVE_THRESHOLD:
+							dens = minf(dens, clampf((CAVE_THRESHOLD - cave_n) * 14.0, -1.0, 1.0))
+
 				# Termite tunnels and chambers: carved out, with chewed mound earth for walls.
 				for pr in prims:
 					var sdf2 := prim_sdf(pr, x, y, z)
@@ -1275,7 +1403,30 @@ func fill_chunk(cpos: Vector3i, cache: Dictionary) -> void:
 					if sdf2 < 1.8 and dens > 0.0:
 						mat = Blocks.DEAD_MOUND if dead_mound else Blocks.MOUND
 
-				chunk.set_voxel(lx, ly, lz, dens, mat)
+				if dens < 1.0:
+					all_solid = false
+				var vi := lx + lz * size + ly * size * size   # straight into the chunk's arrays, no bounds checks
+				chunk.density[vi] = dens
+				chunk.material[vi] = mat
+	if all_solid and chunk != null:
+		solid_chunks[cpos] = true
+
+# A chunk that is solid all through, and so are all its neighbors, has no surface to draw. Most of
+# the deep ground is like this, so it is never meshed. Digging into it clears the mark.
+var solid_chunks := {}
+
+func is_buried_solid(cpos: Vector3i) -> bool:
+	if not solid_chunks.has(cpos):
+		return false
+	for oy in range(-1, 2):
+		for oz in range(-1, 2):
+			for ox in range(-1, 2):
+				var n := cpos + Vector3i(ox, oy, oz)
+				if n.y < CY_MIN:
+					continue   # below the bottom of the world: nobody sees that side
+				if not solid_chunks.has(n):
+					return false
+	return true
 
 # ---------- Termite mounds ----------
 # The world is split into big squares. Each may hold one mound, decided from the square's own
@@ -1363,6 +1514,64 @@ func make_tunnel(a: Vector3, b: Vector3, rad: float) -> Dictionary:
 func make_cone(x: float, z: float, y0: float, rad: float, height: float) -> Dictionary:
 	return {"x": x, "z": z, "y0": y0, "R": rad, "H": height,
 		"lo": Vector3(x - rad * 1.2, y0 - 1.0, z - rad * 1.2), "hi": Vector3(x + rad * 1.2, y0 + height + 1.0, z + rad * 1.2)}
+
+# Just where a mound stands and how big it is, without its inside. The far view uses this to draw
+# every mound out to the horizon. It follows gen_mound_cell's first rolls exactly, so they agree.
+var mound_sites: Dictionary = {}
+
+func mound_site(cell: Vector2i) -> Dictionary:
+	if mound_sites.has(cell):
+		return mound_sites[cell]
+	var site := {}
+	var rng := cell_rng(cell, 9090)
+	var origin := Vector2(cell) * float(MOUND_CELL)
+	var x := origin.x + rng.randf_range(64.0, MOUND_CELL - 64.0)
+	var z := origin.y + rng.randf_range(64.0, MOUND_CELL - 64.0)
+	var chance := float(MOUND_CHANCE[biome_at(x, z)]) * smoothstep(MOUND_START_CLEAR, 400.0, Vector2(x, z).length())
+	if rng.randf() <= chance:
+		for t in 8:
+			x = origin.x + rng.randf_range(64.0, MOUND_CELL - 64.0)
+			z = origin.y + rng.randf_range(64.0, MOUND_CELL - 64.0)
+			var rad := rng.randf_range(15.0, 25.0)
+			if edge_dist(x, z) < 140.0:
+				continue
+			var wet := false
+			for p in pools_at(x, z):
+				if Vector2(x - float(p["x"]), z - float(p["z"])).length() < float(p["radius"]) * 1.5 + rad + 12.0:
+					wet = true
+			if wet:
+				continue
+			var gh := ground_height(x, z)
+			if gh < 40.0 or gh > 54.0:
+				continue
+			var flat := true
+			for off in [Vector2(rad, 0), Vector2(-rad, 0), Vector2(0, rad), Vector2(0, -rad)]:
+				if absf(ground_height(x + off.x, z + off.y) - gh) > 4.0:
+					flat = false
+			if flat:
+				site = {"x": x, "z": z, "gh": gh, "R": rad, "H": minf(rng.randf_range(34.0, 52.0), 100.0 - gh)}
+				break
+	mound_sites[cell] = site
+	return site
+
+# Every mound within reach of the far view, as {x, z, gh, R, H}.
+func far_mounds(center: Vector2, radius: float) -> Array:
+	var out := []
+	var lo := Vector2i(floori((center.x - radius) / MOUND_CELL), floori((center.y - radius) / MOUND_CELL))
+	var hi := Vector2i(floori((center.x + radius) / MOUND_CELL), floori((center.y + radius) / MOUND_CELL))
+	for cx in range(lo.x, hi.x + 1):
+		for cz in range(lo.y, hi.y + 1):
+			var st := mound_site(Vector2i(cx, cz))
+			if not st.is_empty():
+				out.append(st)
+	return out
+
+# The water level of a lake at this spot, or a huge negative number when it is not over a lake.
+func far_lake_level(x: float, z: float) -> float:
+	for p in pools_at(x, z):
+		if p.get("lake", false) and pool_dist(p, x, z) < float(p["radius"]) * 0.8:
+			return float(p["level0"])
+	return -1.0e9
 
 func gen_mound_cell(cell: Vector2i) -> Dictionary:
 	var rng := cell_rng(cell, 9090)
@@ -1592,8 +1801,33 @@ func gen_mound_cell(cell: Vector2i) -> Dictionary:
 		if chambers.size() > 4:
 			posts.append(mound_floor(chambers[rng.randi_range(2, chambers.size() - 1)]))
 
+	# Sealed rooms: no tunnel leads to them. You only find one by digging into it. They hold the
+	# colony's spare nurseries and fungus gardens, and nothing walks there.
+	for i in rng.randi_range(3, 5):
+		for t in 40:
+			var sa := rng.randf() * TAU
+			var sd := rng.randf_range(6.0, spread)
+			var sl := rng.randi_range(1, levels - 1)
+			var sr := Vector3(rng.randf_range(3.0, 4.6), rng.randf_range(2.4, 3.2), rng.randf_range(3.0, 4.6))
+			var sp := Vector3(x + cos(sa) * sd, ly[sl] + rng.randf_range(-1.0, 1.0), z + sin(sa) * sd)
+			if not mound_place(chambers, sp, sr, 3.0):
+				continue
+			var open := false
+			for pr in prims:
+				if prim_sdf(pr, sp.x, sp.y, sp.z) < maxf(sr.x, sr.z) + 1.5:
+					open = true
+					break
+			if open:
+				continue
+			var rq := Vector3((sp.x - qc.x) / (royal_r.x * 2.2), (sp.y - qc.y) / (royal_r.y * 2.2), (sp.z - qc.z) / (royal_r.z * 2.2))
+			if rq.length() < 1.0:
+				continue
+			chambers.append({"c": sp, "r": sr, "lvl": sl, "role": "sealed"})
+			prims.append(make_chamber(sp, sr))
+			break
+
 	return {
-		"kind": "mound", "x": x, "z": z, "gh": gh, "R": rad, "H": height,
+		"kind": "mound", "x": x, "z": z, "gh": gh, "R": rad, "H": height, "royal_r": royal_r,
 		"center": Vector3(x, gh, z), "cones": cones, "prims": prims,
 		"alive": true, "dead": false, "alerted": false,
 		"stock": {"sugar": 0, "pebble": 0, "fiber": 0},
@@ -1965,6 +2199,45 @@ func is_water_cell(x: int, z: int, level: float, support: int) -> bool:
 			return true
 	return false
 
+# True once the ground around a lake's whole bound has been generated.
+func water_ground_ready(p: Dictionary) -> bool:
+	var seed_v: Vector2 = p["seed"]
+	var bound: Vector2 = p["bound"]
+	var lo := col_of(Vector3(seed_v.x - bound.x - 2.0, 0, seed_v.y - bound.y - 2.0))
+	var hi := col_of(Vector3(seed_v.x + bound.x + 2.0, 0, seed_v.y + bound.y + 2.0))
+	for cx in range(lo.x, hi.x + 1):
+		for cz in range(lo.y, hi.y + 1):
+			var cq := Vector2i(cx, cz)
+			if col_in_world(cq) and not col_data.has(cq):
+				return false
+	return true
+
+# A flat sheet of water drawn straight from the lake's shape, with no need for any ground data.
+# It shows the moment the lake is in range, and is swapped for the exact water once the ground exists.
+func quick_lake_mesh(p: Dictionary, level: float) -> ArrayMesh:
+	var pts := lake_outline(p)
+	var cx := float(p["x"])
+	var cz := float(p["z"])
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var idx := PackedInt32Array()
+	verts.append(Vector3(cx, level, cz))
+	norms.append(Vector3.UP)
+	for q in pts:
+		verts.append(Vector3(cx + (q.x - cx) * 0.9, level, cz + (q.y - cz) * 0.9))
+		norms.append(Vector3.UP)
+	var n := pts.size()
+	for i in n:
+		idx.append_array([0, 1 + (i + 1) % n, 1 + i])
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = norms
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return m
+
 func rebuild_water(p: Dictionary) -> void:
 	p["dirty"] = false
 	var body: MeshInstance3D = p["mesh"]
@@ -1974,6 +2247,12 @@ func rebuild_water(p: Dictionary) -> void:
 	if fill < 0.03 or level - floor_y < 0.5:
 		body.mesh = null
 		p["cells"] = {}
+		return
+
+	if p.get("lake", false) and not water_ground_ready(p):
+		body.mesh = quick_lake_mesh(p, level)
+		p["cells"] = {}
+		p["dirty"] = true
 		return
 
 	var bound: Vector2 = p["bound"]
@@ -2009,8 +2288,9 @@ func rebuild_water(p: Dictionary) -> void:
 				queue.append(n)
 
 	if queue.is_empty():
-		body.mesh = null    # the floor was dug out, so the water has drained away
+		body.mesh = null    # the floor was dug out, or the ground is not loaded yet
 		p["cells"] = {}
+		p["dirty"] = true   # try again next tick, so the water appears as soon as the ground is ready
 		return
 
 	# Find the ground under every wet cell, so the water can be drawn as a solid body.
@@ -2122,11 +2402,11 @@ func refresh_water(delta: float) -> void:
 	# Wait until the digging stops, so the dig itself stays smooth.
 	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 		return
-	if not remesh_queue.is_empty():
-		return   # let the terrain finish rebuilding first
 	# One water body per tick, so several never rebuild in the same frame.
 	for p in built_water:
 		if p["dirty"]:
+			if p.get("lake", false) and not water_ground_ready(p):
+				continue   # already showing its quick sheet; wait for the ground
 			rebuild_water(p)
 			return
 
@@ -2384,13 +2664,21 @@ func handle_spray(delta: float) -> void:
 	var origin := ant.global_position + ant.basis.y * 0.7
 	spray.global_transform = Transform3D(Basis.looking_at(aim, ant.basis.y), origin)
 
+	var spray_reach := SPRAY_RANGE * ant.stat("spray_range")
+	var cone_cos := minf(0.96, 0.88 + 0.04 * (ant.stat("spray_range") - 1.0))
+	var cone_tan := sqrt(1.0 - cone_cos * cone_cos) / cone_cos
 	for c in get_tree().get_nodes_in_group("creatures"):
-		var to_c: Vector3 = (c as Node3D).global_position - origin
-		var d := to_c.length()
-		if not (c as Creature).active:
+		var cr := c as Creature
+		if not cr.active:
 			continue
-		if d < SPRAY_RANGE * ant.stat("spray_range") and d > 0.01 and to_c.normalized().dot(aim) > minf(0.96, 0.88 + 0.04 * (ant.stat("spray_range") - 1.0)):
-			(c as Creature).take_damage(SPRAY_DPS * ant.stat("spray_dmg") * delta)
+		# Is any part of the creature inside the spray? A big body (the termite queen) counts by its whole size, not just its middle.
+		var to_c: Vector3 = cr.hit_center() - origin
+		var along := to_c.dot(aim)
+		if along <= 0.01 or along > spray_reach + cr.hit_radius:
+			continue
+		var off_axis := (to_c - aim * along).length()
+		if off_axis < along * cone_tan + cr.hit_radius:
+			cr.take_damage(SPRAY_DPS * ant.stat("spray_dmg") * delta)
 
 # ---------- Ant classes ----------
 # Press E next to your queen to pick a class. Worker: fast, carries a lot. Soldier: tough,
@@ -2857,7 +3145,7 @@ func colony_destroyed(m: Dictionary) -> void:
 	var hi := Vector2i(floori((center.x + reach) / Chunk.SIZE), floori((center.z + reach) / Chunk.SIZE))
 	for cx in range(lo.x, hi.x + 1):
 		for cz in range(lo.y, hi.y + 1):
-			for cy in HEIGHT_CHUNKS:
+			for cy in range(CY_MIN, HEIGHT_CHUNKS):
 				var cp := Vector3i(cx, cy, cz)
 				if world.chunks.has(cp):
 					grey_jobs.append(cp)
@@ -3975,8 +4263,13 @@ func ground_ready(pos: Vector3) -> bool:
 		return true
 	if not col_meshed.has(c):
 		return false
+	# Only the ground at your own height matters. Deep layers being redrawn far below you must not freeze you.
+	var my_layer := floori(pos.y / Chunk.SIZE)
 	for q in remesh_queue:
-		if q.x == c.x and q.z == c.y:
+		if q.x == c.x and q.z == c.y and absi(q.y - my_layer) <= 1:
+			return false
+	for q in mesh_inflight:
+		if q.x == c.x and q.z == c.y and absi(q.y - my_layer) <= 1:
 			return false
 	ensure_solid(c)
 	return true
@@ -3999,6 +4292,7 @@ func try_queue_region(key: Vector2i) -> void:
 
 func mark_edited(chunks: Array) -> void:
 	for c in chunks:
+		solid_chunks.erase(c)
 		edited_cols[Vector2i(c.x, c.z)] = true
 
 # Generates terrain data a chunk at a time, within a time budget.
@@ -4007,20 +4301,38 @@ func gen_step(budget_ms: float) -> void:
 	while true:
 		if gen_job.is_empty():
 			var found = null
-			while not data_wanted.is_empty():
-				var c: Vector2i = data_wanted.pop_front()
-				if not col_data.has(c):
-					found = c
+			var deep := false
+			while not deep_wanted.is_empty():   # ground right around you comes first
+				var dc: Vector2i = deep_wanted.pop_front()
+				if col_data.has(dc) and int(col_deep_from.get(dc, CY_MIN)) > CY_MIN:
+					found = dc
+					deep = true
 					break
 			if found == null:
+				while not data_wanted.is_empty():
+					var c: Vector2i = data_wanted.pop_front()
+					if not col_data.has(c):
+						found = c
+						break
+			if found == null:
 				return
-			gen_job = {"col": found, "cy": 0, "cache": gen_column_cache(found)}
+			var cache := gen_column_cache(found)
+			if deep:
+				gen_job = {"col": found, "cy": CY_MIN, "end": int(col_deep_from[found]), "cache": cache, "deep": true}
+			else:
+				var first := shallow_layer(found, cache)
+				col_deep_from[found] = first
+				gen_job = {"col": found, "cy": first, "end": HEIGHT_CHUNKS, "cache": cache, "deep": false}
 		var col: Vector2i = gen_job["col"]
 		fill_chunk(Vector3i(col.x, gen_job["cy"], col.y), gen_job["cache"])
 		gen_job["cy"] += 1
-		if gen_job["cy"] >= HEIGHT_CHUNKS:
+		if gen_job["cy"] >= int(gen_job["end"]):
+			var was_deep: bool = gen_job["deep"]
 			gen_job = {}
-			on_column_data(col)
+			if was_deep:
+				finish_deep(col)
+			else:
+				on_column_data(col)
 		if (Time.get_ticks_usec() - start) / 1000.0 > budget_ms:
 			return
 
@@ -4032,6 +4344,19 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 	for c in columns_around(cc, data_r):
 		if not col_data.has(c):
 			data_wanted.append(c)
+	# While you are moving, the ground ahead of you is generated before the ground beside and behind you.
+	if ant != null:
+		var heading := Vector2(ant.velocity.x, ant.velocity.z)
+		if heading.length() > 1.0:
+			heading = heading.normalized()
+			data_wanted.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+				var da := Vector2(a - cc)
+				var db := Vector2(b - cc)
+				return da.length() - 0.6 * da.dot(heading) < db.length() - 0.6 * db.dot(heading))
+	deep_wanted = []
+	for c in columns_around(cc, DEEP_COLS):
+		if col_data.has(c) and int(col_deep_from.get(c, CY_MIN)) > CY_MIN:
+			deep_wanted.append(c)
 
 	# Dug columns keep their data when you leave, so their regions need asking for again.
 	for c in columns_around(cc, data_r):
@@ -4043,7 +4368,7 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 			continue
 		col_meshed[c] = true
 		var chunks: Array = []
-		for cy in HEIGHT_CHUNKS:
+		for cy in range(CY_MIN, HEIGHT_CHUNKS):
 			if world.chunks.has(Vector3i(c.x, cy, c.y)):
 				chunks.append(Vector3i(c.x, cy, c.y))
 		queue_remesh(chunks, center)
@@ -4052,12 +4377,13 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 	for c in col_meshed.keys():
 		if Vector2(c - cc).length() > mesh_r + 1.5:
 			col_meshed.erase(c)
-			for cy in HEIGHT_CHUNKS:
+			for cy in range(CY_MIN, HEIGHT_CHUNKS):
 				var cpos := Vector3i(c.x, cy, c.y)
 				if chunk_nodes.has(cpos):
 					chunk_nodes[cpos].queue_free()
 					chunk_nodes.erase(cpos)
 				remesh_queue.erase(cpos)
+				remesh_set.erase(cpos)
 
 	update_collision(cc)
 
@@ -4086,14 +4412,22 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 	evict_far(center, cc)
 
 	# Water appears once the ground around it exists. One body per update, so it never stutters.
-	var candidates: Array = unbuilt_water
+	var candidates: Array = unbuilt_water.duplicate()
 	if edge_dist(center.x, center.z) < 300.0:
 		candidates = unbuilt_water + unbuilt_rivers
+	var water_built := 0
 	for p in candidates:
 		var seed_v: Vector2 = p["seed"]
 		var bound: Vector2 = p["bound"]
-		if absf(seed_v.x - center.x) > 200.0 or absf(seed_v.y - center.z) > 200.0:
+		var is_lake: bool = p.get("lake", false)
+		var reach := 420.0 if is_lake else 300.0
+		if absf(seed_v.x - center.x) > reach or absf(seed_v.y - center.z) > reach:
 			continue
+		if is_lake:
+			add_water_body(p)   # drawn at once from its shape, refined when the ground arrives
+			continue
+		if p.get("kind", "") == "pocket" and int(col_deep_from.get(col_of(Vector3(seed_v.x, 0, seed_v.y)), CY_MIN)) > CY_MIN:
+			continue   # the deep ground around an underground pool is not generated yet
 		var lo := col_of(Vector3(seed_v.x - bound.x - 2.0, 0, seed_v.y - bound.y - 2.0))
 		var hi := col_of(Vector3(seed_v.x + bound.x + 2.0, 0, seed_v.y + bound.y + 2.0))
 		var all_there := true
@@ -4104,10 +4438,12 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 					all_there = false
 		if all_there:
 			add_water_body(p)
-			break
+			water_built += 1
+			if water_built >= 2:
+				break
 	for p in built_water:
 		var seed_v: Vector2 = p["seed"]
-		(p["mesh"] as MeshInstance3D).visible = col_meshed.has(col_of(Vector3(seed_v.x, 0, seed_v.y)))
+		(p["mesh"] as MeshInstance3D).visible = true   # show the water at once, even before the ground around it is drawn
 
 # ---------- Forgetting what is far behind ----------
 # Without this, memory would grow with every step. Far terrain, scenery and water drawings are
@@ -4119,8 +4455,10 @@ func evict_far(center: Vector3, cc: Vector2i) -> void:
 		if Vector2(c - cc).length() <= EVICT_COLS or edited_cols.has(c) or col_meshed.has(c):
 			continue
 		col_data.erase(c)
-		for cy in HEIGHT_CHUNKS:
+		col_deep_from.erase(c)
+		for cy in range(CY_MIN, HEIGHT_CHUNKS):
 			world.chunks.erase(Vector3i(c.x, cy, c.y))
+			solid_chunks.erase(Vector3i(c.x, cy, c.y))
 		done += 1
 		if done >= 8:
 			break
@@ -4202,12 +4540,16 @@ func update_biome(delta: float) -> void:
 
 # Blocking load of the area around the start, so the game opens on solid ground.
 func preload_world(center: Vector3) -> void:
-	stream_update(center, 3.0, 2.0)
+	stream_update(center, 7.0, 5.0)
 	gen_step(1.0e9)
-	stream_update(center, 3.0, 2.0)
+	stream_update(center, 7.0, 5.0)
+	gen_step(1.0e9)   # the deep ground around the start, so nothing is left to build once the game opens
+	stream_update(center, 7.0, 5.0)
 	region_step(1.0e9)
 	while not remesh_queue.is_empty():
-		build_chunk_node(remesh_queue.pop_front())
+		var first: Vector3i = remesh_queue.pop_front()
+		remesh_set.erase(first)
+		build_chunk_node(first)
 
 func stream_world(delta: float) -> void:
 	# The ant waits while the ground under it is still being built.
@@ -4234,33 +4576,78 @@ func stream_world(delta: float) -> void:
 # Edited chunks are rebuilt a few per frame instead of all at once, so a dig or
 # smooth never freezes the game. The chunks nearest the edit go first.
 func queue_remesh(chunks: Array, point: Vector3) -> void:
+	remesh_focus = point
 	for c in chunks:
-		if not remesh_queue.has(c):
+		if not remesh_set.has(c):
+			remesh_set[c] = true
 			remesh_queue.append(c)
-	remesh_queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
-		var ca := Vector3(a * Chunk.SIZE) + Vector3.ONE * (Chunk.SIZE * 0.5)
-		var cb := Vector3(b * Chunk.SIZE) + Vector3.ONE * (Chunk.SIZE * 0.5)
-		return ca.distance_squared_to(point) < cb.distance_squared_to(point))
 
-const REMESH_BUDGET_MS := 5.0   # time spent rebuilding chunks per frame (at least one chunk)
+# Chunk meshes are built on worker threads, a few at a time, so building them never stalls a frame.
+# The main thread looks up each chunk's neighbors, hands them to a worker, and later picks up the
+# finished mesh. Digging queues the chunk again, so a result that is already out of date is replaced.
+const MAX_MESH_JOBS := 3
+var mesh_mutex := Mutex.new()
+var mesh_done: Array = []     # finished meshes, as [chunk, mesh]
+var mesh_inflight := {}       # chunks a worker is building right now
 
+func mesh_worker(cpos: Vector3i, near: Array) -> void:
+	var mesh := SurfaceMesher.build_with(near, cpos)
+	mesh_mutex.lock()
+	mesh_done.append([cpos, mesh])
+	mesh_mutex.unlock()
+
+# Picks up finished meshes, then starts workers on the waiting chunk nearest the last edit or the ant.
 func process_remesh_queue() -> void:
-	if remesh_queue.is_empty():
-		return
-	var start := Time.get_ticks_usec()
-	while not remesh_queue.is_empty():
-		var nxt: Vector3i = remesh_queue.pop_front()
-		if col_meshed.has(Vector2i(nxt.x, nxt.z)):   # skip chunks whose column was unloaded meanwhile
-			build_chunk_node(nxt)
-		if (Time.get_ticks_usec() - start) / 1000.0 > REMESH_BUDGET_MS:
-			break
+	mesh_mutex.lock()
+	var done := mesh_done
+	mesh_done = []
+	mesh_mutex.unlock()
+	for r in done:
+		var cp: Vector3i = r[0]
+		mesh_inflight.erase(cp)
+		if col_meshed.has(Vector2i(cp.x, cp.z)):   # skip chunks whose column was unloaded meanwhile
+			apply_chunk_mesh(cp, r[1])
 
-func build_chunk_node(cpos: Vector3i) -> void:
+	var started := 0
+	while mesh_inflight.size() < MAX_MESH_JOBS and started < 6 and not remesh_queue.is_empty():
+		var best := -1
+		var best_d := INF
+		for i in remesh_queue.size():
+			var c: Vector3i = remesh_queue[i]
+			if mesh_inflight.has(c):
+				continue   # a worker has it; it goes again after that one finishes
+			var d := (Vector3(c * Chunk.SIZE) + Vector3.ONE * (Chunk.SIZE * 0.5)).distance_squared_to(remesh_focus)
+			if d < best_d:
+				best_d = d
+				best = i
+		if best < 0:
+			break
+		var nxt: Vector3i = remesh_queue[best]
+		remesh_queue.remove_at(best)
+		remesh_set.erase(nxt)
+		if not col_meshed.has(Vector2i(nxt.x, nxt.z)):
+			continue
+		if is_buried_solid(nxt) or world.get_chunk(nxt) == null:
+			free_chunk_node(nxt)   # deep, solid and hidden: nothing to draw
+			continue
+		mesh_inflight[nxt] = true
+		started += 1
+		WorkerThreadPool.add_task(mesh_worker.bind(nxt, SurfaceMesher.neighbors_of(world, nxt)))
+
+func free_chunk_node(cpos: Vector3i) -> void:
 	if chunk_nodes.has(cpos):
 		chunk_nodes[cpos].queue_free()
 		chunk_nodes.erase(cpos)
 
-	var mesh := SurfaceMesher.build(world, cpos)
+# Builds a chunk's mesh right now on this thread. Only used while the game is opening.
+func build_chunk_node(cpos: Vector3i) -> void:
+	free_chunk_node(cpos)
+	if is_buried_solid(cpos):
+		return
+	apply_chunk_mesh(cpos, SurfaceMesher.build(world, cpos))
+
+func apply_chunk_mesh(cpos: Vector3i, mesh: ArrayMesh) -> void:
+	free_chunk_node(cpos)
 	if mesh == null:
 		return
 	var mi := MeshInstance3D.new()
@@ -4305,7 +4692,7 @@ func update_collision(cc: Vector2i) -> void:
 
 # The ground under something is only safe to stand on once it is solid.
 func ensure_solid(c: Vector2i) -> void:
-	for cy in HEIGHT_CHUNKS:
+	for cy in range(CY_MIN, HEIGHT_CHUNKS):
 		var cpos := Vector3i(c.x, cy, c.y)
 		if chunk_nodes.has(cpos):
 			attach_collision(chunk_nodes[cpos])
@@ -4341,6 +4728,8 @@ var map_timer := 0.0
 
 func update_map(delta: float) -> void:
 	world_map.paint_step(3)
+	if world_map.visible:
+		world_map.trail = pheromone.flat_points()
 	world_map.update_player(ant.global_position, -ant.global_transform.basis.z, delta)
 	if is_instance_valid(queen):
 		world_map.queen_pos = Vector2(queen.global_position.x, queen.global_position.z)
