@@ -63,7 +63,7 @@ func _physics_process(delta: float) -> void:
 			check_timer = 0.3
 			if world != null and world.sample_density(global_position + Vector3(0, -0.3, 0)) <= 0.0:
 				resting = false
-				remove_from_group("rocks")
+				Registry.remove(self, "rocks")
 				velocity = Vector3.ZERO
 		return
 
@@ -73,7 +73,7 @@ func _physics_process(delta: float) -> void:
 		velocity.y -= GRAVITY * dt
 		var next := global_position + velocity * dt
 		if not hit_something:
-			for c in get_tree().get_nodes_in_group("creatures"):
+			for c in Registry.of("creatures"):
 				var cr := c as Creature
 				if cr == null or not cr.active:
 					continue
@@ -96,7 +96,7 @@ func _physics_process(delta: float) -> void:
 				resting = true
 				velocity = Vector3.ZERO
 				rest_time = 0.0
-				add_to_group("rocks")
+				Registry.add(self, "rocks")
 				return
 			continue   # stay where we were this step; we bounce next step
 		global_position = next

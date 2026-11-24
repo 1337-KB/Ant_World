@@ -6,7 +6,7 @@ extends Node3D
 # a real horizon you never get closer to them. Both fade into the haze color of the sky.
 
 const RING_SEGMENTS := 384
-const FLOCK_BASE_COUNT := [4, 1, 3, 1, 3, 6]   # flocks by biome: forest, desert, highlands, tundra, swamp, savanna
+const FLOCK_BASE_COUNT := [4, 1, 3, 1, 3, 6, 5]   # flocks by biome: forest, desert, highlands, tundra, swamp, savanna
 const NORTH := 4.712389       # angle of the -Z direction on the ring (3 pi / 2)
 const RANGE_HALF_WIDTH := 1.15   # the range spans about 130 degrees; the rest of the horizon is flat
 const WORLD_HALF := 7200.0
@@ -42,7 +42,7 @@ void fragment() {
 const STAR_RADIUS := 3000.0
 const CLOUD_HEIGHT := 300.0       # clouds float at this height above sea level
 const CLOUD_SIZE := 6400.0
-const CLOUD_COVER := [0.5, 0.3, 0.55, 0.65, 0.7, 0.45]   # by biome: forest, desert, highlands, tundra, swamp, savanna
+const CLOUD_COVER := [0.5, 0.3, 0.55, 0.65, 0.7, 0.45, 0.35]   # by biome: forest, desert, highlands, tundra, swamp, savanna
 const CLOUD_DRIFT := Vector2(6.0, 2.5)                    # how fast the wind pushes them, in units per second
 
 # Stars and the moon: painted on a huge ball around the camera. Only visible at night.
@@ -209,7 +209,7 @@ func update_sky_extras(delta: float, cam: Vector3, haze: Color, day: float, warm
 	star_mat.set_shader_parameter("night", night)
 	star_mat.set_shader_parameter("moon_dir", moon_dir)
 
-	cloud_cover = lerpf(cloud_cover, float(CLOUD_COVER[clampi(biome, 0, 5)]), minf(1.0, delta * 0.2))
+	cloud_cover = lerpf(cloud_cover, float(CLOUD_COVER[clampi(biome, 0, 6)]), minf(1.0, delta * 0.2))
 	wind_offset += CLOUD_DRIFT * delta
 	cloud_node.visible = outside
 	cloud_node.global_position = Vector3(cam.x, CLOUD_HEIGHT, cam.z)
@@ -352,7 +352,7 @@ func update(delta: float, cam: Vector3, haze: Color, day: float, warm: float, bi
 	# Birds fly by day and roost at night; and nobody sees them from underground.
 	var want := 0
 	if day > 0.4 and openness > 0.25:
-		want = int(FLOCK_BASE_COUNT[clampi(biome, 0, 5)])
+		want = int(FLOCK_BASE_COUNT[clampi(biome, 0, 6)])
 	while flocks.size() < want:
 		flocks.append(new_flock(cam, true))
 	while flocks.size() > want:
