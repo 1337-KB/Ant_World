@@ -58,7 +58,7 @@ const FIREFLIES_PER_REGION := 0.8
 const SPIDERS_PER_REGION := 0.3
 const BEETLES_PER_REGION := 0.3
 const CENTIPEDES_PER_REGION := 0.25
-const DRAGONFLIES_PER_REGION := 0.3
+const DRAGONFLIES_PER_REGION := 0.15
 const BOSS_CHANCE := 0.12   # chance a region holds a boss creature
 const REGION_BUDGET_MS := 4.0   # time per frame spent building region content
 const ROYAL_WALL := 6.0          # how thick the undiggable walls around a living queen's cell are
@@ -66,7 +66,7 @@ const MOUND_CELL := 320         # the world is split into squares this big; each
 const MOUND_CHANCE := [0.35, 0.4, 0.15, 0.0, 0.25, 0.9, 0.35]   # per biome: forest, desert, highlands, tundra, swamp, savanna
 const GREAT_CELL := Vector2i(8, -6)   # the square holding the Great Mound, about 3,300 units from the start
 const MOUND_START_CLEAR := 150.0    # no mounds this close to the start, and rarer out to 700
-const EVICT_COLS := 24.0         # terrain farther than this many columns (16 units each) away is forgotten, unless you dug it
+const EVICT_COLS := 22.0         # terrain farther than this many columns (16 units each) away is forgotten, unless you dug it
 const GRASS_MIN_HEIGHT := 0.8
 const GRASS_MAX_HEIGHT := 2.0
 const PEBBLE_SOLID_MIN := 0.5   # pebbles at least this big are solid; smaller ones you walk over
@@ -90,16 +90,17 @@ const ROCK_DAMAGE := 40.0
 const ROCK_COOLDOWN := 0.55
 const ACID_DRAIN := 25.0               # acid used per second of spraying
 const ACID_REGEN := 12.0               # acid regained per second when not spraying
-# World streaming: terrain is generated and drawn in columns of 16 x 16 units around the ant.
-const DATA_RADIUS := 20       # columns of terrain data kept generated around the ant
-const MESH_RADIUS := 17       # columns actually drawn (about 272 units)
+# World streaming (the detailed voxel ground only reaches about 224 units; a middle-distance picture and a far picture, both made from the height formula alone, cover everything beyond).
+# Terrain is generated and drawn in columns of 16 x 16 units around the ant.
+const DATA_RADIUS := 16       # columns of terrain data kept generated around the ant
+const MESH_RADIUS := 14       # columns actually drawn (about 224 units; beyond it the middle-distance and far pictures take over)
 const COLLISION_COLS := 7.0   # only ground this close is solid; farther ground is just a picture, which is much cheaper
-const TERRAIN_FADE_START := 200.0   # the detailed ground starts to thin out here...
-const TERRAIN_FADE_END := 262.0    # ...and is gone here, where the distant land takes over
-const TREE_FADE_END := 170.0        # trees and rocks fade out by about here
-const GRASS_FADE_START := 60.0
-const GRASS_FADE_END := 95.0
-const GRASS_COLS := 8.0       # grass and pebbles are drawn only this close (there are far too many to draw all the way out)
+const TERRAIN_FADE_START := 140.0   # the detailed ground starts to thin out here...
+const TERRAIN_FADE_END := 210.0    # ...and is gone here, where the distant land takes over
+const TREE_FADE_END := 255.0        # trees and rocks fade out by about here
+const GRASS_FADE_START := 90.0
+const GRASS_FADE_END := 142.0
+const GRASS_COLS := 12.0       # grass and pebbles are drawn only this close (there are far too many to draw all the way out)
 # The deep ground is only generated when you are near it. Far columns get just the surface layers,
 # which is what you see, so the land ahead of you appears much faster.
 const DEEP_COLS := 5.0          # columns around you whose deep ground is generated too
@@ -112,7 +113,7 @@ const DAY_LENGTH := 600.0              # seconds for a full day and night (10 mi
 const SPIDER_RESPAWN_SECONDS := 120.0
 const BEETLE_RESPAWN_SECONDS := 150.0
 const CENTIPEDE_RESPAWN_SECONDS := 150.0
-const DRAGONFLY_RESPAWN_SECONDS := 180.0
+const DRAGONFLY_RESPAWN_SECONDS := 420.0
 const PICKUP_RESPAWN_SECONDS := 90.0   # how long a spot takes to grow its resource back
 const PIECE_ORDER := ["pebble_wall", "fiber_floor", "pillar"]
 
@@ -121,14 +122,18 @@ const GRASS_SHADER = """
 shader_type spatial;
 render_mode cull_disabled;
 
+// Grass in the wind. A gust rolls across the field as a slow wave, each blade sways a little out of
+// step with its neighbours, and blades near you lean away as you pass through them.
+global uniform vec3 ant_pos;
 uniform float sway_strength = 0.35;
 uniform float sway_speed = 1.4;
+uniform vec2 wind_dir = vec2(0.8, 0.6);
+uniform float fade_start = 50.0;
+uniform float fade_end = 78.0;
 varying float tip;
 varying float rnd;
 varying vec2 kind;   // x: dry (golden savanna grass), y: dark (swamp)
 varying float dist;
-uniform float fade_start = 50.0;
-uniform float fade_end = 78.0;
 
 float hash21(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));
@@ -142,10 +147,32 @@ void vertex() {
 	vec3 origin = MODEL_MATRIX[3].xyz;
 	dist = length(origin - INV_VIEW_MATRIX[3].xyz);
 	rnd = hash21(origin.xz * 0.7);
+
+	// A gust: a wave about 70 units long that rolls downwind, so the field ripples.
+	float gust = sin(dot(origin.xz, wind_dir) * 0.09 - TIME * 0.9) * 0.5 + 0.5;
+	gust = gust * gust;
+	float wind = sway_strength * (0.4 + 0.9 * gust);
+	// Each blade sways on its own beat, with a quicker flutter on top.
 	float phase = TIME * sway_speed + origin.x * 0.6 + origin.z * 0.45;
-	float bend = sin(phase) * sway_strength * tip * tip;
-	VERTEX.x += bend;
-	VERTEX.z += bend * 0.5;
+	float flutter = sin(TIME * 3.1 + rnd * 6.2832 + origin.x * 1.7) * 0.25;
+	float bend = (sin(phase) * 0.6 + 0.5 + flutter) * wind * tip * tip;
+	vec3 push_world = vec3(wind_dir.x, 0.0, wind_dir.y) * bend;
+
+	// You push blades aside as you walk through them (not when you are well above them, up a tree).
+	vec2 away = origin.xz - ant_pos.xz;
+	float d = length(away);
+	float touch = (1.0 - smoothstep(0.6, 3.2, d)) * (1.0 - smoothstep(1.5, 4.0, ant_pos.y - origin.y));
+	if (d > 0.01) {
+		push_world += vec3(away.x, 0.0, away.y) / d * touch * 0.9 * tip * tip;
+	}
+	float droop = (abs(bend) + touch * 0.5 * tip * tip) * 0.3;
+
+	// Turn the world-space push into the blade's own space, because each blade is rotated and stretched.
+	mat3 M = mat3(MODEL_MATRIX);
+	vec3 s2 = vec3(dot(M[0], M[0]), dot(M[1], M[1]), dot(M[2], M[2]));
+	vec3 local = (transpose(M) * push_world) / s2;
+	VERTEX += local;
+	VERTEX.y -= droop * tip / sqrt(s2.y);   // a bent blade is a little lower
 }
 
 void fragment() {
@@ -158,7 +185,9 @@ void fragment() {
 	vec3 base = mix(green, dry, kind.x);
 	base = mix(base, base * vec3(0.5, 0.65, 0.55), kind.y);
 	ALBEDO = mix(base * 0.6, base * 1.35, tip);
-	ROUGHNESS = 0.85;
+	ROUGHNESS = 0.8;
+	SPECULAR = 0.2;
+	BACKLIGHT = base * 0.5 * tip;   // sunlight glows through the blades from behind
 }
 """
 
@@ -181,7 +210,7 @@ var pop := Population.new()   # creature spawns and termite colonies: see popula
 var atmos := Atmosphere.new()   # sky, day and night, fog, biome tint: see atmosphere.gd
 var gfx := Graphics.new()   # picture quality and effects, minus key cycles it: see graphics.gd
 var water := Water.new()   # all the water: see water.gd   # all the water: see water.gd
-var material := StandardMaterial3D.new()
+var material := ShaderMaterial.new()   # the ground: see terrain_look.gd
 const FLORA_PATCHES_PER_REGION := 22
 const LANDMARK_CHANCE := 0.5   # chance a region has one landmark (log, stump, bottle cap, giant acorn)
 var ant: Ant
@@ -191,7 +220,8 @@ var storage_open_frame := -1
 var world_map: WorldMap
 var pheromone: Pheromone
 var sky_life: SkyLife
-var far_terrain: FarTerrain
+var far_terrain: FarTerrain     # the coarse picture out to the horizon
+var mid_terrain: FarTerrain     # a finer picture of the middle distance, between the detailed ground and the horizon
 var show_help := false   # F1 toggles the full controls list
 var queen: Placeable = null   # the colony's queen, once placed
 
@@ -247,16 +277,11 @@ func _ready() -> void:
 	add_child(pheromone)
 	sky_life = SkyLife.new()
 	add_child(sky_life)
-	far_terrain = FarTerrain.new()
-	far_terrain.height_fn = terrain.ground_height
-	far_terrain.kind_fn = terrain.surface_kind
-	far_terrain.edge_fn = terrain.edge_dist
-	far_terrain.biome_fn = terrain.biome_at
-	far_terrain.lake_fn = terrain.far_lake_level
-	far_terrain.mounds_fn = terrain.far_mounds
-	far_terrain.river_width = float(RIVER_WIDTH)
-	far_terrain.river_level = RIVER_LEVEL
-	add_child(far_terrain)
+	# The detailed ground only reaches about 210 units. Past that, a medium-detail picture (grid of 8)
+	# out to 560, and past that a coarse one (grid of 16) to the horizon. Each is drawn lower than the
+	# one inside it, so the finer one always wins where they overlap.
+	mid_terrain = make_far_terrain(560.0, 8.0, 120.0, 2.5, 40.0, 215.0, 0.14, false)
+	far_terrain = make_far_terrain(900.0, 16.0, 440.0, 4.0, 64.0, 480.0, 0.55, true)
 	atmos.setup_headlamp()   # needs the ant's camera, which exists once the ant is in the scene
 	gfx.start()              # same: it adds depth of field and floating dust to that camera
 	ant.position = storage_pos + Vector3(-6, 15, 0)
@@ -288,6 +313,28 @@ func _ready() -> void:
 	ant.dash_hit_creature.connect(func(_c): show_message("Dash hit!"))
 	crafting.crafted.connect(func(t: String): show_message("Crafted %s. It is in your hotbar." % Crafting.RECIPES[t]["label"]))
 
+func make_far_terrain(radius: float, step: float, hole: float, sink: float, rebuild: float, tree_skip: float, tree_chance: float, mounds: bool) -> FarTerrain:
+	var ft := FarTerrain.new()
+	ft.radius = radius
+	ft.step = step
+	ft.hole = hole
+	ft.sink = sink
+	ft.rebuild_dist = rebuild
+	ft.tree_skip = tree_skip
+	ft.tree_chance = tree_chance
+	ft.draw_mounds = mounds
+	ft.height_fn = terrain.ground_height
+	ft.kind_fn = terrain.surface_kind
+	ft.edge_fn = terrain.edge_dist
+	ft.biome_fn = terrain.biome_at
+	ft.glade_fn = terrain.glade_at
+	ft.lake_fn = terrain.far_lake_level
+	ft.mounds_fn = terrain.far_mounds
+	ft.river_width = float(RIVER_WIDTH)
+	ft.river_level = RIVER_LEVEL
+	add_child(ft)
+	return ft
+
 # ---------- Per-frame updates ----------
 
 func _process(delta: float) -> void:
@@ -311,6 +358,9 @@ func _process(delta: float) -> void:
 	ui.update_map(delta)
 	ui.update_hud(delta)
 	stream.process_remesh_queue()
+	var here2 := Vector2(ant.global_position.x, ant.global_position.z)
+	mid_terrain.update(here2)
+	far_terrain.update(here2)
 	water.handle_water(delta)
 	water.refresh_water(delta)
 

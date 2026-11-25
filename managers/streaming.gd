@@ -21,6 +21,7 @@ var region_nodes := {}   # Vector2i -> Node3D holding that square's grass, rocks
 var obstacles_by_region := {}   # region -> trees and boulders inside it
 var region_queue: Array = []
 var region_done := {}
+var region_ready := {}    # regions whose ground is completely drawn, so their grass and trees may show
 var edited_cols := {}     # columns you have dug or filled. Their terrain is never forgotten.
 var decor_sets := []
 var remesh_queue: Array[Vector3i] = []   # chunks waiting to be rebuilt
@@ -81,19 +82,30 @@ func region_node(key: Vector2i) -> Node3D:
 		region_nodes[key] = n
 	return region_nodes[key]
 
-# Columns within a radius of a center column, nearest first.
+# Columns within a radius of a center column, nearest first. The nearest-first order of the offsets
+# never changes, so it is worked out once per radius and reused (sorting thousands of columns every
+# few tenths of a second was a stutter of its own).
+var offsets_cache := {}
+
+func offsets_for(radius: float) -> Array:
+	if not offsets_cache.has(radius):
+		var list := []
+		var r := ceili(radius)
+		for dx in range(-r, r + 1):
+			for dz in range(-r, r + 1):
+				if Vector2(dx, dz).length() <= radius:
+					list.append(Vector2i(dx, dz))
+		list.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+			return Vector2(a).length_squared() < Vector2(b).length_squared())
+		offsets_cache[radius] = list
+	return offsets_cache[radius]
+
 func columns_around(center: Vector2i, radius: float) -> Array:
 	var out := []
-	var r := ceili(radius)
-	for dx in range(-r, r + 1):
-		for dz in range(-r, r + 1):
-			if Vector2(dx, dz).length() > radius:
-				continue
-			var c := center + Vector2i(dx, dz)
-			if col_in_world(c):
-				out.append(c)
-	out.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		return Vector2(a - center).length_squared() < Vector2(b - center).length_squared())
+	for o in offsets_for(radius):
+		var c: Vector2i = center + (o as Vector2i)
+		if col_in_world(c):
+			out.append(c)
 	return out
 
 # True if this column and all its neighbors have terrain data, so it can be drawn correctly.
@@ -114,11 +126,9 @@ func ground_ready(pos: Vector3) -> bool:
 		return false
 	# Only the ground at your own height matters. Deep layers being redrawn far below you must not freeze you.
 	var my_layer := floori(pos.y / Chunk.SIZE)
-	for q in remesh_queue:
-		if q.x == c.x and q.z == c.y and absi(q.y - my_layer) <= 1:
-			return false
-	for q in mesh_inflight:
-		if q.x == c.x and q.z == c.y and absi(q.y - my_layer) <= 1:
+	for k in range(-1, 2):
+		var layer := Vector3i(c.x, my_layer + k, c.y)
+		if remesh_set.has(layer) or mesh_inflight.has(layer):
 			return false
 	ensure_solid(c)
 	return true
@@ -201,10 +211,13 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 		var heading := Vector2(m.ant.velocity.x, m.ant.velocity.z)
 		if heading.length() > 1.0:
 			heading = heading.normalized()
-			data_wanted.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+			var head_n := mini(data_wanted.size(), 400)   # only the nearest few hundred are worth reordering
+			var head: Array = data_wanted.slice(0, head_n)
+			head.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
 				var da := Vector2(a - cc)
 				var db := Vector2(b - cc)
 				return da.length() - 0.6 * da.dot(heading) < db.length() - 0.6 * db.dot(heading))
+			data_wanted = head + data_wanted.slice(head_n)
 	deep_wanted = []
 	for c in columns_around(cc, Main.DEEP_COLS):
 		if col_data.has(c) and int(col_deep_from.get(c, Main.CY_MIN)) > Main.CY_MIN:
@@ -242,14 +255,12 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 	# Grass, rocks, trees and creatures are shown over ground that is drawn, and run only fairly close to you.
 	for key in region_nodes:
 		var rn: Node3D = region_nodes[key]
-		var shown := false
+		var shown := region_ground_built(key)
 		var active := false
 		var decor := false
 		for dx in 2:
 			for dz in 2:
 				var rc := Vector2i(key.x * 2 + dx, key.y * 2 + dz)
-				if col_meshed.has(rc):
-					shown = true
 				var rd := Vector2(rc - cc).length()
 				if rd <= Main.ACTIVE_COLS:
 					active = true
@@ -264,6 +275,27 @@ func stream_update(center: Vector3, data_r: float, mesh_r: float) -> void:
 	evict_far(center, cc)
 
 	m.water.stream(center)
+
+# A region's grass, trees and rocks only show once all its ground is drawn, so nothing hangs in the
+# air over ground that has not appeared yet. Once ready it stays ready until the ground is un-drawn.
+func region_ground_built(key: Vector2i) -> bool:
+	var ready: bool = region_ready.get(key, false)
+	for dx in 2:
+		for dz in 2:
+			var rc := Vector2i(key.x * 2 + dx, key.y * 2 + dz)
+			if not col_in_world(rc):
+				continue
+			if not col_meshed.has(rc):
+				region_ready.erase(key)
+				return false
+			if ready:
+				continue
+			for cy in range(Main.CY_MIN, Main.HEIGHT_CHUNKS):
+				var cp := Vector3i(rc.x, cy, rc.y)
+				if remesh_set.has(cp) or mesh_inflight.has(cp):
+					return false
+	region_ready[key] = true
+	return true
 
 # ---------- Forgetting what is far behind ----------
 # Without this, memory would grow with every step. Far terrain, scenery and water drawings are
@@ -293,6 +325,7 @@ func evict_far(center: Vector3, cc: Vector2i) -> void:
 		region_nodes[key].queue_free()
 		region_nodes.erase(key)
 		region_done.erase(key)
+		region_ready.erase(key)
 		obstacles_by_region.erase(key)
 		var kept := []
 		for d in decor_sets:
@@ -333,8 +366,15 @@ func stream_world(delta: float) -> void:
 	if absf(ap.x) > lim or absf(ap.z) > lim:
 		m.ant.global_position = Vector3(clampf(ap.x, -lim, lim), ap.y, clampf(ap.z, -lim, lim))
 
-	gen_step(Main.GEN_BUDGET_MS)
-	m.content.region_step(Main.REGION_BUDGET_MS)
+	# Building the world shares the frame with everything else. When frames are already slow it takes
+	# less time, so the game stays playable and the ground fills in a little later; standing still it
+	# takes more, so the ground catches up quickly.
+	var frame_ms := delta * 1000.0
+	var share := clampf(remap(frame_ms, 17.0, 40.0, 1.0, 0.35), 0.35, 1.0)
+	if m.ant.velocity.length() < 1.0:
+		share = 1.6
+	gen_step(Main.GEN_BUDGET_MS * share)
+	m.content.region_step(Main.REGION_BUDGET_MS * share)
 	stream_timer -= delta
 	if stream_timer <= 0.0:
 		stream_timer = 0.3
@@ -349,12 +389,16 @@ func queue_remesh(chunks: Array, point: Vector3) -> void:
 	for c in chunks:
 		if not remesh_set.has(c):
 			remesh_set[c] = true
-			remesh_queue.append(c)
+			# Chunks near the point (your digging, or the ground around you) jump the line.
+			if (Vector3(c * Chunk.SIZE) + Vector3.ONE * (Chunk.SIZE * 0.5)).distance_to(point) < 48.0:
+				remesh_queue.push_front(c)
+			else:
+				remesh_queue.append(c)
 
 # Chunk meshes are built on worker threads, a few at a time, so building them never stalls a frame.
 # The main thread looks up each chunk's neighbors, hands them to a worker, and later picks up the
 # finished mesh. Digging queues the chunk again, so a result that is already out of date is replaced.
-const MAX_MESH_JOBS := 3
+var max_mesh_jobs := clampi(OS.get_processor_count() - 1, 3, 8)   # one worker per spare processor core
 var mesh_mutex := Mutex.new()
 var mesh_done: Array = []     # finished meshes, as [chunk, mesh]
 var mesh_inflight := {}       # chunks a worker is building right now
@@ -378,10 +422,10 @@ func process_remesh_queue() -> void:
 			apply_chunk_mesh(cp, r[1])
 
 	var started := 0
-	while mesh_inflight.size() < MAX_MESH_JOBS and started < 6 and not remesh_queue.is_empty():
+	while mesh_inflight.size() < max_mesh_jobs and started < 8 and not remesh_queue.is_empty():
 		var best := -1
 		var best_d := INF
-		for i in remesh_queue.size():
+		for i in mini(remesh_queue.size(), 300):   # the front of the line is the nearest; no need to search thousands
 			var c: Vector3i = remesh_queue[i]
 			if mesh_inflight.has(c):
 				continue   # a worker has it; it goes again after that one finishes
@@ -466,44 +510,7 @@ func ensure_solid(c: Vector2i) -> void:
 		if chunk_nodes.has(cpos):
 			attach_collision(chunk_nodes[cpos])
 
-# The look of the ground: grain and bumps projected from all sides, and the fade into the distant land.
+# The look of the ground: every kind of earth gets its own surface detail, and the ground fades into
+# the distant land. All of it lives in terrain_look.gd.
 func setup_terrain_material() -> void:
-	m.material.vertex_color_use_as_albedo = true
-	m.material.roughness = 1.0
-	# The detailed ground melts away into the distant land with a fine dither, so it never pops in.
-	# (Max is smaller than min on purpose: fully solid up to max, fully gone at min.)
-	m.material.distance_fade_mode = BaseMaterial3D.DISTANCE_FADE_PIXEL_DITHER
-	m.material.distance_fade_max_distance = Main.TERRAIN_FADE_START
-	m.material.distance_fade_min_distance = Main.TERRAIN_FADE_END
-
-	# Fine grain and bumps projected from all sides, so the ground isn't smooth plastic.
-	var grain := FastNoiseLite.new()
-	grain.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	grain.frequency = 0.08
-	grain.fractal_octaves = 4
-
-	var ramp := Gradient.new()
-	ramp.set_color(0, Color(0.7, 0.7, 0.7))
-	ramp.set_color(1, Color(1.0, 1.0, 1.0))
-
-	var albedo_tex := NoiseTexture2D.new()
-	albedo_tex.noise = grain
-	albedo_tex.seamless = true
-	albedo_tex.width = 256
-	albedo_tex.height = 256
-	albedo_tex.color_ramp = ramp
-
-	var normal_tex := NoiseTexture2D.new()
-	normal_tex.noise = grain
-	normal_tex.seamless = true
-	normal_tex.as_normal_map = true
-	normal_tex.bump_strength = 6.0
-	normal_tex.width = 256
-	normal_tex.height = 256
-
-	m.material.albedo_texture = albedo_tex
-	m.material.normal_enabled = true
-	m.material.normal_texture = normal_tex
-	m.material.uv1_triplanar = true
-	m.material.uv1_world_triplanar = true
-	m.material.uv1_scale = Vector3(0.4, 0.4, 0.4)
+	TerrainLook.setup(m.material)

@@ -9,13 +9,13 @@ extends Creature
 
 enum State { PATROL, STALK, TELL, DIVE, RECOVER, CRASHED }
 
-const SIGHT_RANGE := 40.0
-const LOSE_RANGE := 62.0
+const SIGHT_RANGE := 28.0
+const LOSE_RANGE := 45.0
 const PATROL_SPEED := 6.0
 const STALK_SPEED := 11.0
 const STALK_RADIUS := 12.0     # how wide it circles above you
 const STALK_HEIGHT := 9.0      # how high above you it circles
-const TELL_TIME := 0.9         # how long it hovers and marks you before the dive
+const TELL_TIME := 1.2         # how long it hovers and marks you before the dive
 const DIVE_SPEED := 26.0
 const DIVE_RADIUS := 2.4       # a dive hits you if you are this close when it passes
 const DIVE_DAMAGE := 18.0
@@ -29,7 +29,7 @@ var vel := Vector3.ZERO
 var target := Vector3.ZERO
 var time := 0.0
 var timer := 0.0
-var cd := 2.0                  # time until it may start another dive
+var cd := 4.0                  # time until it may start another dive
 var circle := randf() * TAU
 var circle_dir := 1.0 if randf() < 0.5 else -1.0
 var dive_to := Vector3.ZERO
@@ -61,7 +61,7 @@ func take_damage(amount: float) -> void:
 func on_hurt() -> void:
 	if state == State.PATROL:
 		state = State.STALK
-		cd = 0.8
+		cd = 2.0
 
 # ---------- Model ----------
 
@@ -149,8 +149,10 @@ func cast(from: Vector3, to: Vector3) -> Dictionary:
 func _physics_process(delta: float) -> void:
 	if not active:
 		return   # asleep for the night
-	if is_loaded.is_valid() and not is_loaded.call(global_position):
-		return   # the ground here is not built yet, so wait
+	# Patrolling needs no solid ground (only the height, which is known everywhere), so it keeps
+	# flying even where the ground is not drawn yet. Diving and crashing need it, so those wait.
+	if state != State.PATROL and is_loaded.is_valid() and not is_loaded.call(global_position):
+		return
 	time += delta
 	cd -= delta
 	var to_ant := ant.global_position - global_position
@@ -160,7 +162,7 @@ func _physics_process(delta: float) -> void:
 		State.PATROL:
 			if dist < SIGHT_RANGE and ant_exposed():
 				state = State.STALK
-				cd = randf_range(1.2, 2.4)
+				cd = randf_range(3.0, 5.0)
 			else:
 				if global_position.distance_to(target) < 3.0:
 					pick_target()
@@ -242,7 +244,7 @@ func end_dive() -> void:
 	set_ring(dive_to, 1.0, false)
 	state = State.RECOVER
 	timer = RECOVER_TIME
-	cd = randf_range(2.5, 4.5)
+	cd = randf_range(6.0, 10.0)
 	var away := global_position - ant.global_position
 	away.y = 0.0
 	if away.length() < 0.5:
@@ -255,7 +257,7 @@ func crash() -> void:
 	state = State.CRASHED
 	timer = CRASH_TIME
 	vel = Vector3(0.0, -2.0, 0.0)
-	cd = randf_range(2.5, 4.0)
+	cd = randf_range(5.0, 8.0)
 
 func crash_fall(delta: float) -> void:
 	var floor_y := ground_y(global_position) + 0.6

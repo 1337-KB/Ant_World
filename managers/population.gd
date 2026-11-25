@@ -125,6 +125,7 @@ func spawn_centipede(pos: Vector3) -> Creature:
 
 # A creature died: drop its loot, and for fireflies, bring a new one back later.
 func _on_creature_died(c: Creature) -> void:
+	Effects.death_puff(m, c.global_position + Vector3(0, 0.3, 0), 2.5 if c.is_boss else 1.0)
 	var kind := c.loot_kind()
 	if c.is_minion:
 		return   # a boss's helper: no loot, no respawn
@@ -360,31 +361,7 @@ func spawn_worm(pos: Vector3, boss: bool = false) -> void:
 
 # A puff of rock dust where the worm breaks out.
 func burst_dust(pos: Vector3) -> void:
-	var puff := CPUParticles3D.new()
-	puff.one_shot = true
-	puff.emitting = true
-	puff.amount = 50
-	puff.lifetime = 1.0
-	puff.explosiveness = 0.9
-	puff.local_coords = false
-	puff.direction = Vector3(0, 1, 0)
-	puff.spread = 70.0
-	puff.initial_velocity_min = 2.0
-	puff.initial_velocity_max = 5.0
-	puff.gravity = Vector3(0, -4.0, 0)
-	var bit := SphereMesh.new()
-	bit.radius = 0.08
-	bit.height = 0.16
-	bit.radial_segments = 6
-	bit.rings = 3
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = Color(0.5, 0.42, 0.34)
-	bit.material = mat
-	puff.mesh = bit
-	m.add_child(puff)
-	puff.global_position = pos
-	m.get_tree().create_timer(1.6).timeout.connect(puff.queue_free)
+	Effects.impact(m, pos, 2.2, Color(0.5, 0.43, 0.36))
 
 # ---------- Bosses ----------
 # A boss is a big, tough version of a creature that sits where a normal one would. When you get

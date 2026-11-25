@@ -18,6 +18,7 @@ extends RefCounted
 const DEFAULT_QUALITY := 2
 const NAMES := ["Low", "Medium", "High"]
 
+static var globals_added := false   # the shader global may only be created once per run
 var m: Main
 var quality := DEFAULT_QUALITY
 var attributes: CameraAttributesPractical
@@ -25,6 +26,10 @@ var motes: GPUParticles3D
 
 func setup(main: Main) -> void:
 	m = main
+	# The grass shader reads where you are, so blades can lean away as you walk through them.
+	if not globals_added:
+		globals_added = true
+		RenderingServer.global_shader_parameter_add("ant_pos", RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3(0.0, -1000.0, 0.0))
 
 # Call once the ant and its camera exist.
 func start() -> void:
@@ -143,6 +148,7 @@ func make_motes() -> void:
 
 # Each frame: motes only drift by day and out in the open, never underground or at night.
 func update(_delta: float) -> void:
+	RenderingServer.global_shader_parameter_set("ant_pos", m.ant.global_position)
 	if motes == null:
 		return
 	var h := sin(m.atmos.day_time * TAU)

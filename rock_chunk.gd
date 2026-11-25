@@ -51,6 +51,7 @@ func land() -> void:
 	landed = true
 	rotation = Vector3.ZERO
 	global_position = to + Vector3(0, SIZE * 0.6, 0)
+	Effects.impact(get_parent(), to, 1.8)
 	if is_instance_valid(ant):
 		var off := ant.global_position - to
 		if Vector2(off.x, off.z).length() < HIT_RADIUS and off.y < 2.0:

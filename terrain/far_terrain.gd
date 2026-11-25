@@ -7,17 +7,24 @@ extends Node3D
 # time so it never stutters, and rebuilt around you as you walk. The detailed ground is drawn
 # over it near you, and the distance fog fades it into the haze.
 
-const RADIUS := 900.0          # how far out the picture reaches
-const STEP := 16.0             # distance between grid points
-const HOLE := 56.0             # nothing is drawn this close to the middle (the detailed ground covers it)
-const REBUILD_DIST := 32.0     # rebuild the picture when you are this far from its middle
-const SLICE_MS := 4.0          # time spent building per frame
-const SINK := 2.5              # drawn this far under the real ground, so the detailed ground always wins
+const SLICE_MS := 3.0          # time spent building per frame
 const WATER_COLOR := Color(0.18, 0.42, 0.62)
+
+# The game uses two of these: a finer one for the middle distance and a coarse one for the horizon.
+# Their settings are given when they are made (see make_far_terrain in main.gd).
+var radius := 900.0            # how far out the picture reaches
+var step := 16.0               # distance between grid points
+var hole := 24.0               # nothing is drawn this close to the middle (the detailed ground, or a finer picture, covers it)
+var rebuild_dist := 32.0       # rebuild the picture when you are this far from its middle
+var sink := 2.5                # drawn this far under the real ground, so the detailed ground always wins
+var tree_skip := 285.0         # real trees are drawn up to about here, so none are added closer
+var tree_chance := 0.55        # share of grid points that get a tree, in wooded biomes
+var draw_mounds := true
 
 var height_fn: Callable        # (x, z) -> ground height
 var kind_fn: Callable          # (x, z) -> block id of the surface
 var edge_fn: Callable          # (x, z) -> distance to the edge of the world (negative outside)
+var glade_fn: Callable         # (x, z) -> how much of a meadow this is (0 to 1); no stand-in trees grow there
 var biome_fn: Callable         # (x, z) -> biome number
 var lake_fn: Callable          # (x, z) -> lake water level, or a huge negative number when not over a lake
 var mounds_fn: Callable        # (center, radius) -> mounds as {x, z, gh, R, H}
@@ -33,11 +40,9 @@ var colors_cache := {}
 var trees_node: MultiMeshInstance3D
 var mounds_node: MultiMeshInstance3D
 
-const TREE_SKIP := 190.0       # real trees are drawn up to about here, so none are added closer
-const TREE_CHANCE := 0.55      # share of grid points that get a tree, in wooded biomes
 
 func _ready() -> void:
-	n = int(RADIUS * 2.0 / STEP) + 1
+	n = int(radius * 2.0 / step) + 1
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true
 	mat.roughness = 1.0
@@ -69,9 +74,9 @@ func _ready() -> void:
 	var mid := float(n - 1) * 0.5
 	for r in n - 1:
 		for c in n - 1:
-			var qx := (float(c) + 0.5 - mid) * STEP
-			var qz := (float(r) + 0.5 - mid) * STEP
-			if Vector2(qx, qz).length() < HOLE:
+			var qx := (float(c) + 0.5 - mid) * step
+			var qz := (float(r) + 0.5 - mid) * step
+			if Vector2(qx, qz).length() < hole:
 				continue
 			var i0 := r * n + c
 			indices.append_array(PackedInt32Array([i0, i0 + 1, i0 + n, i0 + 1, i0 + n + 1, i0 + n]))
@@ -128,12 +133,16 @@ func color_of(kind: int) -> Color:
 
 # Called every frame with where you are.
 func update(pos: Vector2) -> void:
-	if job.is_empty() and center.distance_to(pos) > REBUILD_DIST and height_fn.is_valid():
-		var snap_pos := Vector2(roundf(pos.x / STEP) * STEP, roundf(pos.y / STEP) * STEP)
-		job = {"center": snap_pos, "row": 0, "h": PackedFloat32Array(), "col": PackedColorArray(), "water": PackedByteArray(), "trees": []}
-		(job["h"] as PackedFloat32Array).resize(n * n)
-		(job["col"] as PackedColorArray).resize(n * n)
-		(job["water"] as PackedByteArray).resize(n * n)
+	if job.is_empty() and center.distance_to(pos) > rebuild_dist and height_fn.is_valid():
+		var snap_pos := Vector2(roundf(pos.x / step) * step, roundf(pos.y / step) * step)
+		# Packed arrays are copied when read from a dictionary, so they are sized first and then stored.
+		var h0 := PackedFloat32Array()
+		var c0 := PackedColorArray()
+		var w0 := PackedByteArray()
+		h0.resize(n * n)
+		c0.resize(n * n)
+		w0.resize(n * n)
+		job = {"center": snap_pos, "row": 0, "h": h0, "col": c0, "water": w0, "trees": []}
 	if job.is_empty():
 		return
 	var start := Time.get_ticks_usec()
@@ -144,9 +153,11 @@ func update(pos: Vector2) -> void:
 	while int(job["row"]) < n:
 		var r := int(job["row"])
 		for c in n:
-			var x := cen.x - RADIUS + float(c) * STEP
-			var z := cen.y - RADIUS + float(r) * STEP
+			var x := cen.x - radius + float(c) * step
+			var z := cen.y - radius + float(r) * step
 			var i := r * n + c
+			if Vector2(x - cen.x, z - cen.y).length() < hole - 2.0 * step:
+				continue   # inside the hole nothing is drawn, so do not spend time on it
 			var lake := -1.0e9
 			if lake_fn.is_valid():
 				lake = float(lake_fn.call(x, z))
@@ -159,17 +170,20 @@ func update(pos: Vector2) -> void:
 				cs[i] = WATER_COLOR
 				ws[i] = 1
 			else:
-				hs[i] = float(height_fn.call(x, z)) - SINK
+				hs[i] = float(height_fn.call(x, z)) - sink
 				cs[i] = color_of(int(kind_fn.call(x, z)))
 				ws[i] = 0
-				if biome_fn.is_valid() and Vector2(x - cen.x, z - cen.y).length() > TREE_SKIP:
-					var hh := hash(Vector2i(roundi(x / STEP), roundi(z / STEP)))
-					if float(hh & 255) / 255.0 < TREE_CHANCE:
+				if biome_fn.is_valid() and Vector2(x - cen.x, z - cen.y).length() > tree_skip and not (glade_fn.is_valid() and float(glade_fn.call(x, z)) > 0.1):
+					var hh := hash(Vector2i(roundi(x / step), roundi(z / step)))
+					if float(hh & 255) / 255.0 < tree_chance:
 						var tc := tree_color(int(biome_fn.call(x, z)), hh)
 						if tc.a > 0.0:
-							(job["trees"] as Array).append([x + float((hh >> 8) & 15) - 7.5, hs[i] + SINK, z + float((hh >> 12) & 15) - 7.5, 0.8 + 0.6 * float((hh >> 24) & 255) / 255.0, tc])
+							(job["trees"] as Array).append([x + float((hh >> 8) & 15) - 7.5, hs[i] + sink, z + float((hh >> 12) & 15) - 7.5, 0.8 + 0.6 * float((hh >> 24) & 255) / 255.0, tc])
 		job["row"] = r + 1
 		if (Time.get_ticks_usec() - start) / 1000.0 > SLICE_MS:
+			job["h"] = hs      # store the work so far; the arrays above are copies
+			job["col"] = cs
+			job["water"] = ws
 			return
 	finish(cen, hs, cs, ws)
 
@@ -181,7 +195,7 @@ func finish(cen: Vector2, hs: PackedFloat32Array, cs: PackedColorArray, ws: Pack
 	for r in n:
 		for c in n:
 			var i := r * n + c
-			verts[i] = Vector3(cen.x - RADIUS + float(c) * STEP, hs[i], cen.y - RADIUS + float(r) * STEP)
+			verts[i] = Vector3(cen.x - radius + float(c) * step, hs[i], cen.y - radius + float(r) * step)
 			if ws[i] == 1:
 				norms[i] = Vector3.UP
 			else:
@@ -189,7 +203,7 @@ func finish(cen: Vector2, hs: PackedFloat32Array, cs: PackedColorArray, ws: Pack
 				var hr := hs[i + 1] if c < n - 1 else hs[i]
 				var hu := hs[i - n] if r > 0 else hs[i]
 				var hd := hs[i + n] if r < n - 1 else hs[i]
-				norms[i] = Vector3(hl - hr, 2.0 * STEP, hu - hd).normalized()
+				norms[i] = Vector3(hl - hr, 2.0 * step, hu - hd).normalized()
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
@@ -218,8 +232,8 @@ func build_props(cen: Vector2, trees: Array) -> void:
 	trees_node.multimesh = tm
 
 	var ms := []
-	if mounds_fn.is_valid():
-		ms = mounds_fn.call(cen, RADIUS)
+	if mounds_fn.is_valid() and draw_mounds:
+		ms = mounds_fn.call(cen, radius)
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = mound_mesh()

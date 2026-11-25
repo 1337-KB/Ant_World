@@ -887,6 +887,54 @@ func soil_at(x: float, y: float, z: float, depth: float, kind: int, under: int) 
 # The world is split into big squares. Each square may hold one pool, decided from the square's
 # own number the first time anything looks there, so the same pool is always in the same place.
 
+# ---------- Glades ----------
+# Open meadows in the middle of the forest: no trees or boulders, thick grass, and plenty of
+# flowers and mushrooms (see region_glade in content.gd). There is one a short walk from where you
+# start, and others turn up here and there in forest country. Each is found from its own square of
+# the map, so it is the same every time.
+const GLADE_CELL := 360
+const START_GLADE := Vector3(-87.0, 118.0, 70.0)   # x, z, radius: a big one near the start
+var glade_sites := {}
+
+func glade_site(cell: Vector2i) -> Dictionary:
+	if glade_sites.has(cell):
+		return glade_sites[cell]
+	var site := {}
+	var start_cell := Vector2i(floori(START_GLADE.x / float(GLADE_CELL)), floori(START_GLADE.y / float(GLADE_CELL)))
+	if cell == start_cell:
+		site = {"x": START_GLADE.x, "z": START_GLADE.y, "R": START_GLADE.z}
+	else:
+		var rng := cell_rng(cell, 4242)
+		var origin := Vector2(cell) * float(GLADE_CELL)
+		var x := origin.x + rng.randf_range(90.0, float(GLADE_CELL) - 90.0)
+		var z := origin.y + rng.randf_range(90.0, float(GLADE_CELL) - 90.0)
+		var rad := rng.randf_range(45.0, 85.0)
+		if rng.randf() < 0.55 and biome_at(x, z) == Main.FOREST and edge_dist(x, z) > 160.0:
+			var wet := false
+			for p in pools_at(x, z):
+				if Vector2(x - float(p["x"]), z - float(p["z"])).length() < float(p["radius"]) * 1.5 + rad:
+					wet = true
+			if not wet:
+				site = {"x": x, "z": z, "R": rad}
+	glade_sites[cell] = site
+	return site
+
+# 1 in the heart of a glade, fading to 0 at its ragged edge. 0 everywhere else.
+func glade_at(x: float, z: float) -> float:
+	var cx := floori(x / float(GLADE_CELL))
+	var cz := floori(z / float(GLADE_CELL))
+	var best := 0.0
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var s := glade_site(Vector2i(cx + dx, cz + dz))
+			if s.is_empty():
+				continue
+			var rad: float = s["R"]
+			var d := Vector2(x - float(s["x"]), z - float(s["z"])).length()
+			d += noise.get_noise_2d(x * 0.04, z * 0.04) * rad * 0.18   # an uneven edge, not a perfect circle
+			best = maxf(best, 1.0 - smoothstep(rad * 0.7, rad, d))
+	return best
+
 func cell_rng(cell: Vector2i, salt: int) -> RandomNumberGenerator:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(Vector3i(cell.x, cell.y, salt))

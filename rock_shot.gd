@@ -80,6 +80,7 @@ func _physics_process(delta: float) -> void:
 				var reach := HIT_RADIUS + (3.5 if cr is TermiteQueen else 0.0)
 				if (cr.global_position + Vector3(0, 0.6, 0)).distance_to(next) < reach:
 					cr.take_damage(damage)
+					Effects.impact(get_parent(), cr.global_position + Vector3(0, 0.5, 0), 0.6, Color(0.55, 0.5, 0.45))
 					hit_something = true
 					# It knocks off the target and drops.
 					velocity = -velocity * 0.15 + Vector3(0, 3.0, 0)
@@ -88,6 +89,8 @@ func _physics_process(delta: float) -> void:
 		if world != null and world.sample_density(next) > 0.0:
 			var n := _surface_normal(next)
 			var along := velocity.dot(n)
+			if along < -6.0:
+				Effects.impact(get_parent(), global_position, clampf(-along / 18.0, 0.3, 0.8))
 			if along < 0.0:
 				velocity -= (1.0 + BOUNCE) * along * n
 			var sideways := velocity - n * velocity.dot(n)

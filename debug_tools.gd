@@ -20,6 +20,11 @@ func build_spots() -> void:
 	var lake := nearest_lake()
 	if lake.size() == 2:
 		spots.append({"name": "Nearest lake shore", "xz": lake[0] + Vector2(float(lake[1]) + 4.0, 0.0)})
+	# Meadows: the one by the start, and the nearest others.
+	spots.append({"name": "Start glade", "xz": Vector2(Terrain.START_GLADE.x, Terrain.START_GLADE.y)})
+	var other_glade := nearest_glade()
+	if other_glade != Vector2.ZERO:
+		spots.append({"name": "Nearest other glade", "xz": other_glade})
 	var mound := nearest_mound()
 	if not mound.is_empty():
 		spots.append({"name": "Nearest termite mound", "xz": Vector2(float(mound["x"]), float(mound["z"])) + Vector2(float(mound["R"]) + 8.0, 0.0)})
@@ -45,6 +50,21 @@ func build_spots() -> void:
 		spots.append({"name": "Nearest " + String(Main.BIOME_NAMES[b]), "xz": nearest[b]})
 	spots.append({"name": "River edge", "xz": Vector2(float(Main.HALF - Main.RIVER_WIDTH - 6), 0.0)})
 	spots.append({"name": "Chunk corner far away", "xz": Vector2(640.0, 640.0)})
+
+# The closest glade (other than the one by the start), found by checking the map squares around the start.
+func nearest_glade() -> Vector2:
+	var best := Vector2.ZERO
+	var best_d := INF
+	for cx in range(-6, 7):
+		for cz in range(-6, 7):
+			var s: Dictionary = m.terrain.glade_site(Vector2i(cx, cz))
+			if s.is_empty() or Vector2(float(s["x"]), float(s["z"])).is_equal_approx(Vector2(Terrain.START_GLADE.x, Terrain.START_GLADE.y)):
+				continue
+			var p := Vector2(float(s["x"]), float(s["z"]))
+			if p.length() < best_d:
+				best_d = p.length()
+				best = p
+	return best
 
 func nearest_lake() -> Array:
 	var best := []

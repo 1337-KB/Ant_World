@@ -231,12 +231,16 @@ func is_protected(point: Vector3, radius: float) -> bool:
 			return true
 	return false
 
-# Hide grass and pebbles whose ground has been dug away.
-func clear_decor_near(point: Vector3, radius: float) -> void:
+# Hide grass and pebbles whose ground has been dug away. Returns how many were hidden.
+# With burn = true it is a fire: only plants go (grass, flowers, ferns), never pebbles.
+func clear_decor_near(point: Vector3, radius: float, burn: bool = false) -> int:
+	var count := 0
 	for decor in m.stream.decor_sets:
 		var rect: Rect2 = decor["rect"]
 		if not rect.grow(radius + 1.0).has_point(Vector2(point.x, point.z)):
 			continue   # nothing of this square is near the dig
+		if burn and decor.has("bodies"):
+			continue   # pebbles do not burn
 		var mm: MultiMesh = decor["mm"]
 		var pos: Array = decor["pos"]
 		var hidden: Array = decor["hidden"]
@@ -248,6 +252,25 @@ func clear_decor_near(point: Vector3, radius: float) -> void:
 				continue
 			if m.world.sample_density(p - Vector3(0, 0.3, 0)) < 0.0:
 				hidden[i] = 1
+				count += 1
 				mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ZERO), p))
 				if decor.has("bodies") and decor["bodies"][i] != null:
 					decor["bodies"][i].queue_free()   # the pebble is gone, so its solid body goes too
+	return count
+
+# How many plants stand within radius of a point and could burn (counts only, changes nothing).
+func fuel_near(point: Vector3, radius: float) -> int:
+	var count := 0
+	for decor in m.stream.decor_sets:
+		var rect: Rect2 = decor["rect"]
+		if not rect.grow(radius + 1.0).has_point(Vector2(point.x, point.z)) or decor.has("bodies"):
+			continue
+		var pos: Array = decor["pos"]
+		var hidden: Array = decor["hidden"]
+		for i in pos.size():
+			if hidden[i] == 1:
+				continue
+			var p: Vector3 = pos[i]
+			if Vector2(p.x - point.x, p.z - point.z).length() <= radius:
+				count += 1
+	return count

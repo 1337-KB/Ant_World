@@ -20,7 +20,11 @@ static func add(node: Node, kind: String) -> void:
 	if bucket.has(node):
 		return
 	bucket[node] = true
-	node.tree_exiting.connect(Registry.remove.bind(node, kind), CONNECT_ONE_SHOT)
+	# An object can be removed by hand and added again later (a rock picked up and thrown), so the
+	# hook may already be there.
+	var hook := Registry.remove.bind(node, kind)
+	if not node.tree_exiting.is_connected(hook):
+		node.tree_exiting.connect(hook, CONNECT_ONE_SHOT)
 
 static func remove(node: Node, kind: String) -> void:
 	if sets.has(kind):
@@ -40,4 +44,4 @@ static func count(kind: String) -> int:
 	return bucket.size()
 
 static func clear_all() -> void:
-	sets.clear()
+	sets.clear() 	 	

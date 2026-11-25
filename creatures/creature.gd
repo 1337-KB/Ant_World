@@ -103,8 +103,18 @@ func take_damage(amount: float) -> void:
 		damage_mult *= 1.3
 	show_bar()
 	on_hurt()
+	hit_fx()
 	if health <= 0.0:
 		die()
+
+# A small puff where it is hit, at most four times a second so a steady spray does not flood the screen.
+var last_hit_fx := 0
+func hit_fx() -> void:
+	var now := Time.get_ticks_msec()
+	if now - last_hit_fx < 250 or not is_inside_tree() or not visible:
+		return
+	last_hit_fx = now
+	Effects.hit_puff(get_parent(), global_position + Vector3(0, 0.4, 0) * maxf(1.0, scale.y))
 
 func on_hurt() -> void:
 	pass   # animals override this to flash, flee, or get angry
@@ -123,27 +133,74 @@ func burrow_y(p: Vector3) -> float:
 			return g
 	return ant.global_position.y
 
-# A red disc on the ground marking where a boss move will land. Hidden when shown is false.
+# A warning on the ground marking where a boss move will land: a pulsing red disc with a bright
+# edge and rippling lines, plus glowing sparks rising off the rim. Hidden when shown is false.
+# When it vanishes after a wide warning, the ground answers with a dust ring (the move landed).
+const RING_SHADER := """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled;
+
+void fragment() {
+	vec2 p = UV * 2.0 - 1.0;
+	float r = length(p);
+	if (r > 1.0) {
+		discard;
+	}
+	float edge = smoothstep(0.84, 0.95, r) * (1.0 - smoothstep(0.97, 1.0, r));
+	float ripple = 0.5 + 0.5 * sin(r * 16.0 - TIME * 9.0);
+	float beat = 0.8 + 0.2 * sin(TIME * 11.0);
+	float fill = 0.10 + 0.10 * ripple * r;
+	ALBEDO = vec3(1.0, 0.16, 0.07) + vec3(0.0, 0.35, 0.15) * edge;
+	ALPHA = clamp(fill + edge * 0.85, 0.0, 1.0) * beat;
+}
+"""
+static var ring_shader: Shader
+var ring_fx: CPUParticles3D
+var ring_was_shown := false
+var ring_point := Vector3.ZERO
+var ring_radius := 1.0
+
 func set_ring(point: Vector3, radius: float, shown: bool) -> void:
 	if ring == null:
+		if ring_shader == null:
+			ring_shader = Shader.new()
+			ring_shader.code = RING_SHADER
 		ring = MeshInstance3D.new()
-		var cm := CylinderMesh.new()
-		cm.top_radius = 1.0
-		cm.bottom_radius = 1.0
-		cm.height = 0.06
-		cm.radial_segments = 40
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = Color(1.0, 0.15, 0.1, 0.3)
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		cm.material = mat
-		ring.mesh = cm
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(2.0, 2.0)
+		var mat := ShaderMaterial.new()
+		mat.shader = ring_shader
+		pm.material = mat
+		ring.mesh = pm
 		ring.top_level = true
+		ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(ring)
+		ring_fx = Effects.make(60, 0.7, 0.28, true,
+			[Color(1.0, 0.5, 0.2, 0.0), Color(1.0, 0.35, 0.1, 0.9), Color(1.0, 0.15, 0.05, 0.0)], [0.6, 1.0, 0.0])
+		ring_fx.top_level = true
+		ring_fx.emitting = false
+		ring_fx.emission_shape = CPUParticles3D.EMISSION_SHAPE_RING
+		ring_fx.emission_ring_axis = Vector3.UP
+		ring_fx.emission_ring_height = 0.1
+		ring_fx.direction = Vector3.UP
+		ring_fx.spread = 12.0
+		ring_fx.initial_velocity_min = 1.5
+		ring_fx.initial_velocity_max = 3.5
+		ring_fx.gravity = Vector3(0, 1.0, 0)
+		add_child(ring_fx)
+	if ring_was_shown and not shown and ring_radius > 2.0:
+		Effects.shockwave(get_parent(), ring_point, ring_radius)
+	ring_was_shown = shown
 	ring.visible = shown
+	ring_fx.emitting = shown
 	if shown:
-		ring.global_position = point + Vector3(0, 0.2, 0)
+		ring_point = point
+		ring_radius = radius
+		ring.global_position = point + Vector3(0, 0.25, 0)
 		ring.scale = Vector3(radius, 1.0, radius)
+		ring_fx.global_position = point + Vector3(0, 0.3, 0)
+		ring_fx.emission_ring_radius = radius * 0.95
+		ring_fx.emission_ring_inner_radius = radius * 0.8
 
 # Gives a boss its own colors so it is easy to tell from the normal creature: every material
 # shifts around the color wheel, gets brighter, and gains a faint glowing rim.

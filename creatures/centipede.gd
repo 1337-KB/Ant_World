@@ -333,6 +333,31 @@ func erupt() -> void:
 	solid = true
 	ghost = false
 
+# Each segment finds the ground under itself, so the body drapes over bumps and slopes instead of
+# staying stiff and leaving half of it floating. It rises and falls with the ground and tilts to match it.
+func ground_segments(delta: float) -> void:
+	if ghost or dive > 0.3:
+		return
+	var inv := body_root.global_transform.basis.orthonormalized().inverse()
+	var blend := minf(1.0, 14.0 * delta)
+	for s in segs:
+		var node: Node3D = s["node"]
+		var p := body_root.to_global(node.position)
+		var hit := cast(p + up * 1.6, p - up * 2.4)
+		if hit.is_empty():
+			continue
+		var n: Vector3 = hit["normal"]
+		if n.y <= 0.05:
+			continue   # inside rock; leave it where the trail put it
+		var n_local := (inv * n).normalized()
+		node.position = body_root.to_local(hit["position"]) + n_local * 0.55
+		# Tilt to the ground: pitch along the body, roll across it, measured in the segment's own heading.
+		var in_heading := Basis(Vector3.UP, node.rotation.y).inverse() * n_local
+		var roll := asin(clampf(-in_heading.x, -0.9, 0.9))
+		var pitch := atan2(in_heading.z, in_heading.y)
+		node.rotation.x = lerp_angle(node.rotation.x, pitch, blend)
+		node.rotation.z = lerp_angle(node.rotation.z, roll, blend)
+
 func animate(delta: float) -> void:
 	if moving:
 		walk_phase += delta * (20.0 if state != State.WANDER else 10.0)
@@ -357,6 +382,7 @@ func animate(delta: float) -> void:
 	# The body follows the path the head took. While coiled for the sweep it uses the tight layout.
 	if curl < 0.05 and state != State.COIL and state != State.SWEEP:
 		follow_trail(body_root, segs, -0.4, 0.55)
+		ground_segments(delta)
 	else:
 		for s in segs:
 			(s["node"] as Node3D).rotation.y = 0.0

@@ -16,33 +16,32 @@ var class_layer: CanvasLayer
 var class_buttons: Array = []
 var douse_fx: CPUParticles3D
 var fire_cd := 0.0
+var splash_t := 0.0
+var douse_splash_t := 0.0
 
 func setup(main: Main) -> void:
 	m = main
 
 func setup_spray() -> void:
-	spray = CPUParticles3D.new()
+	spray = Effects.make(110, 0.45, 0.4, true,
+		[Color(0.9, 1.0, 0.45, 0.95), Color(0.45, 1.0, 0.15, 0.75), Color(0.1, 0.65, 0.05, 0.0)], [0.7, 1.0, 0.3])
 	spray.emitting = false
-	spray.amount = 90
-	spray.lifetime = 0.45
-	spray.local_coords = false
 	spray.direction = Vector3(0, 0, -1)   # straight ahead of the node; we aim the node itself
 	spray.spread = 8.0
 	spray.initial_velocity_min = 13.0
 	spray.initial_velocity_max = 17.0
 	spray.gravity = Vector3(0, -3.0, 0)
-	var drop := SphereMesh.new()
-	drop.radius = 0.1
-	drop.height = 0.2
-	drop.radial_segments = 6
-	drop.rings = 3
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = Color(0.7, 1.0, 0.25, 0.85)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	drop.material = mat
-	spray.mesh = drop
 	m.add_child(spray)
+
+# Where a stream from origin along aim first hits solid ground, or Vector3.INF if it runs out.
+func stream_end(origin: Vector3, aim: Vector3, reach: float) -> Vector3:
+	var q := PhysicsRayQueryParameters3D.create(origin, origin + aim * reach)
+	q.collision_mask = 1
+	q.exclude = [m.ant.get_rid()]
+	var hit := m.get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty():
+		return Vector3.INF
+	return hit["position"]
 
 # Hold G to spray acid in front of the camera. It hurts creatures in a narrow cone.
 func handle_spray(delta: float) -> void:
@@ -66,6 +65,14 @@ func handle_spray(delta: float) -> void:
 	var aim := -cam.global_transform.basis.z
 	var origin := m.ant.global_position + m.ant.basis.y * 0.7
 	spray.global_transform = Transform3D(Basis.looking_at(aim, m.ant.basis.y), origin)
+
+	# A splash where the stream lands.
+	splash_t -= delta
+	if splash_t <= 0.0:
+		splash_t = 0.12
+		var end := stream_end(origin, aim, Main.SPRAY_RANGE * m.ant.stat("spray_range"))
+		if end != Vector3.INF:
+			Effects.acid_splash(m, end)
 
 	var spray_reach := Main.SPRAY_RANGE * m.ant.stat("spray_range")
 	var cone_cos := minf(0.96, 0.88 + 0.04 * (m.ant.stat("spray_range") - 1.0))
@@ -189,10 +196,10 @@ func choose_role(i: int) -> void:
 
 # Longer range for soldiers: the drops fly faster and live longer.
 func apply_spray_role() -> void:
-	var m: float = m.ant.stat("spray_range")
-	spray.initial_velocity_min = 13.0 * m
-	spray.initial_velocity_max = 17.0 * m
-	spray.lifetime = 0.45 * (1.0 + 0.35 * (m - 1.0))
+	var reach: float = m.ant.stat("spray_range")
+	spray.initial_velocity_min = 13.0 * reach
+	spray.initial_velocity_max = 17.0 * reach
+	spray.lifetime = 0.45 * (1.0 + 0.35 * (reach - 1.0))
 
 func convert_soil_to_rock() -> void:
 	if m.ant.role != 1 or m.building.build_mode or m.ant.controls_locked:
@@ -231,27 +238,14 @@ const DOUSE_RANGE := 9.0
 const WATER_DRAIN := 25.0   # water used per second of dousing
 
 func setup_douse() -> void:
-	douse_fx = CPUParticles3D.new()
+	douse_fx = Effects.make(110, 0.5, 0.36, true,
+		[Color(0.85, 0.95, 1.0, 0.9), Color(0.4, 0.7, 1.0, 0.7), Color(0.2, 0.45, 1.0, 0.0)], [0.7, 1.0, 0.3])
 	douse_fx.emitting = false
-	douse_fx.amount = 90
-	douse_fx.lifetime = 0.5
-	douse_fx.local_coords = false
 	douse_fx.direction = Vector3(0, 0, -1)
 	douse_fx.spread = 10.0
 	douse_fx.initial_velocity_min = 12.0
 	douse_fx.initial_velocity_max = 16.0
 	douse_fx.gravity = Vector3(0, -6.0, 0)
-	var drop := SphereMesh.new()
-	drop.radius = 0.1
-	drop.height = 0.2
-	drop.radial_segments = 6
-	drop.rings = 3
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = Color(0.35, 0.65, 1.0, 0.85)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	drop.material = mat
-	douse_fx.mesh = drop
 	m.add_child(douse_fx)
 
 func handle_fire(delta: float) -> void:
@@ -270,6 +264,12 @@ func handle_fire(delta: float) -> void:
 	var aim := -cam.global_transform.basis.z
 	var origin := m.ant.global_position + m.ant.basis.y * 0.7
 	douse_fx.global_transform = Transform3D(Basis.looking_at(aim, m.ant.basis.y), origin)
+	douse_splash_t -= delta
+	if douse_splash_t <= 0.0:
+		douse_splash_t = 0.12
+		var wend := stream_end(origin, aim, DOUSE_RANGE)
+		if wend != Vector3.INF:
+			Effects.water_splash(m, wend)
 	for f in Registry.of("fires"):
 		var to_f: Vector3 = (f as Node3D).global_position - origin
 		var d := to_f.length()
@@ -286,12 +286,13 @@ func light_fire() -> void:
 		m.show_message("Aim at the ground to light a fire.")
 		return
 	var pos: Vector3 = (hit as Vector3) + Vector3(0, 0.15, 0)
-	if spawn_fire(pos):
+	if spawn_fire(pos, 7.0):
 		m.ant.inventory["resin"] = int(m.ant.inventory["resin"]) - 1
 		m.show_message("Fire lit. Hold J to put it out with water.")
 
-# Returns true if a fire was started.
-func spawn_fire(pos: Vector3) -> bool:
+# Returns true if a fire was started. start_fuel is how many seconds it burns on bare ground;
+# grass and flowers around it feed it for longer.
+func spawn_fire(pos: Vector3, start_fuel: float = 3.0) -> bool:
 	if Registry.of("fires").size() >= FIRE_CAP:
 		return false
 	if m.water.water_surface_at(pos + Vector3(0, 0.3, 0)) > -1.0e8:
@@ -303,20 +304,55 @@ func spawn_fire(pos: Vector3) -> bool:
 	fire.ant = m.ant
 	fire.queen_getter = func(): return m.queen
 	fire.spread_cb = spread_fire
+	fire.burn_cb = burn_plants
+	fire.heat_cb = heat_plants
+	fire.fuel = start_fuel
 	m.add_child(fire)
 	fire.global_position = pos
-	m.dig.clear_decor_near(pos, 1.8)   # the grass here burns away
 	return true
 
-# Fire creeps across grass, and only across grass.
-func spread_fire(from: Vector3) -> void:
+# Burns the grass and flowers around a point and says how many went.
+func burn_plants(pos: Vector3, radius: float) -> int:
+	return m.dig.clear_decor_near(pos, radius, true)
+
+# The wind that pushes fire along (the same direction as the swaying grass).
+const WIND := Vector2(0.8, 0.6)
+
+# Fire creeps only where there is something to burn, and mostly the way the wind blows.
+# reach is 1 for a ground fire and larger for embers thrown off a burning tree.
+func spread_fire(from: Vector3, reach: float = 1.0) -> void:
 	var ang := randf() * TAU
-	var dist := randf_range(1.8, 3.0)
+	if randf() < 0.7:
+		ang = WIND.angle() + randf_range(-1.1, 1.1)
+	var dist := randf_range(1.8, 3.0) * reach
 	var x := from.x + cos(ang) * dist
 	var z := from.z + sin(ang) * dist
-	if absf(x) > Main.HALF - 1.0 or absf(z) > Main.HALF - 1.0 or m.terrain.surface_kind(x, z) != Blocks.GRASS:
+	if absf(x) > Main.HALF - 1.0 or absf(z) > Main.HALF - 1.0:
 		return
+	if m.dig.fuel_near(Vector3(x, from.y, z), 2.0) < 2:
+		return   # bare ground, nothing to burn
 	var hit = m.world.raycast(Vector3(x, from.y + 4.0, z), Vector3.DOWN, 10.0)
 	if hit == null:
 		return
 	spawn_fire((hit as Vector3) + Vector3(0, 0.15, 0))
+
+# Fire heats the bushes and trees beside it. After a few seconds of heat they catch.
+func heat_plants(pos: Vector3, seconds: float) -> void:
+	for pl in Registry.of("plants"):
+		var n := pl as Node3D
+		if not is_instance_valid(n) or n.get_meta("burning", false) or n.get_meta("burnt", false):
+			continue
+		var off := n.global_position - pos
+		if Vector2(off.x, off.z).length() > float(n.get_meta("burn_r", 3.0)) + 1.5:
+			continue
+		var heat := float(n.get_meta("heat", 0.0)) + seconds
+		n.set_meta("heat", heat)
+		if heat >= 2.5:
+			ignite_plant(n)
+
+func ignite_plant(n: Node3D) -> void:
+	n.set_meta("burning", true)
+	var pb := PlantBurn.new()
+	pb.spread_cb = spread_fire
+	pb.fire_cb = spawn_fire
+	n.add_child(pb)

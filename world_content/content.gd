@@ -311,13 +311,16 @@ func add_plant(x: float, z: float, rng: RandomNumberGenerator, biome: int, bark:
 				add_round_tree(x, z, rng, bark)
 
 # A static body for a plant, sunk slightly so it never floats.
-func new_plant_body(x: float, z: float) -> StaticBody3D:
+func new_plant_body(x: float, z: float, burns: bool = true, burn_r: float = 2.5) -> StaticBody3D:
 	var body := StaticBody3D.new()
 	body.collision_layer = 1
 	body.collision_mask = 0
 	m.stream.region_node(m.stream.region_key(x, z)).add_child(body)
 	body.global_position = Vector3(x, terrain.ground_height(x, z) - 1.0, z)
 	body.set_meta("climbable", true)   # beetles, spiders and termites can climb it
+	if burns:
+		body.set_meta("burn_r", burn_r)
+		Registry.add(body, "plants")   # fire can catch it
 	return body
 
 func plant_mat(color: Color) -> StandardMaterial3D:
@@ -332,10 +335,11 @@ func fade_far(mi: MeshInstance3D) -> void:
 	mi.visibility_range_end_margin = 12.0
 	mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 
-func plant_part(body: Node3D, mesh: Mesh, color: Color, pos: Vector3, orient: Basis = Basis.IDENTITY) -> MeshInstance3D:
+# sway > 0 makes the part move in the wind (leaves, needles, bushes); 0 keeps it rigid (trunks, branches).
+func plant_part(body: Node3D, mesh: Mesh, color: Color, pos: Vector3, orient: Basis = Basis.IDENTITY, sway: float = 0.0) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
-	mi.material_override = plant_mat(color)
+	mi.material_override = PlantSway.leaf_material(color, mesh, sway) if sway > 0.0 else plant_mat(color)
 	mi.transform = Transform3D(orient, pos)
 	fade_far(mi)
 	body.add_child(mi)
@@ -366,7 +370,7 @@ func trunk_collision(body: Node3D, mesh: CylinderMesh, pos: Vector3) -> void:
 
 # Desert: a saguaro-style cactus with two arms.
 func add_cactus(x: float, z: float, rng: RandomNumberGenerator) -> void:
-	var body := new_plant_body(x, z)
+	var body := new_plant_body(x, z, false)   # a cactus is too wet to burn
 	var h := rng.randf_range(12.0, 19.0)
 	var r := rng.randf_range(1.4, 1.9)
 	var green := Color(0.18, 0.48, 0.24)
@@ -421,7 +425,7 @@ func add_acacia(x: float, z: float, rng: RandomNumberGenerator) -> void:
 		var t := float(i) / 2.0
 		var leaf := Color(0.22, 0.34, 0.10).lerp(Color(0.38, 0.52, 0.14), t)
 		var mi := plant_part(body, sphere_mesh(), leaf,
-				pos + Vector3(rng.randf_range(-3.0, 3.0), 0.9 * float(i), rng.randf_range(-3.0, 3.0)))
+				pos + Vector3(rng.randf_range(-3.0, 3.0), 0.9 * float(i), rng.randf_range(-3.0, 3.0)), Basis.IDENTITY, 0.5)
 		mi.scale = Vector3(w, 1.0 + 0.2 * float(i), w)
 	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.4})
 	# Shrubs often grow in the tree's shade.
@@ -438,11 +442,13 @@ func add_shrub(x: float, z: float, rng: RandomNumberGenerator) -> void:
 	var root := Node3D.new()
 	m.stream.region_node(m.stream.region_key(x, z)).add_child(root)
 	root.global_position = Vector3(x, terrain.ground_height(x, z) - 0.3, z)
+	root.set_meta("burn_r", 2.2)
+	Registry.add(root, "plants")
 	for i in rng.randi_range(2, 3):
 		var s := rng.randf_range(1.3, 2.3)
 		var g := rng.randf_range(0.85, 1.15)
 		var mi := plant_part(root, sphere_mesh(), Color(0.16 * g, 0.30 * g, 0.11 * g),
-				Vector3(rng.randf_range(-1.4, 1.4), s * 0.5, rng.randf_range(-1.4, 1.4)))
+				Vector3(rng.randf_range(-1.4, 1.4), s * 0.5, rng.randf_range(-1.4, 1.4)), Basis.IDENTITY, 0.16)
 		mi.scale = Vector3(s * 1.2, s * 0.9, s * 1.2)
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
@@ -457,7 +463,7 @@ func add_willow(x: float, z: float, rng: RandomNumberGenerator) -> void:
 	for i in rng.randi_range(3, 5):
 		var w := rng.randf_range(6.0, 9.0)
 		var mi := plant_part(body, sphere_mesh(), Color(0.10, 0.32, 0.14),
-				Vector3(rng.randf_range(-4.0, 4.0), h + rng.randf_range(-1.5, 2.0), rng.randf_range(-4.0, 4.0)))
+				Vector3(rng.randf_range(-4.0, 4.0), h + rng.randf_range(-1.5, 2.0), rng.randf_range(-4.0, 4.0)), Basis.IDENTITY, 0.5)
 		mi.scale = Vector3(w, w * 0.6, w)
 	for i in 12:
 		var ang := rng.randf() * TAU
@@ -499,7 +505,7 @@ func add_pine(x: float, z: float, rng: RandomNumberGenerator, leaf: Color) -> vo
 		var ch := 9.0
 		var g := rng.randf_range(0.9, 1.1)
 		plant_part(body, cylinder_mesh(0.0, cr, ch, 12), Color(leaf.r * g, leaf.g * g, leaf.b * g),
-				Vector3(0, h * 0.3 + t * h * 0.6 + ch * 0.4, 0))
+				Vector3(0, h * 0.3 + t * h * 0.6 + ch * 0.4, 0), Basis.IDENTITY, 0.4)
 	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.4})
 
 # A tall forest spruce: a thin trunk and many stacked, narrowing skirts of needles that droop at the tips.
@@ -519,7 +525,7 @@ func add_spruce(x: float, z: float, rng: RandomNumberGenerator) -> void:
 		var ch := lerpf(8.0, 5.0, t)
 		var g := rng.randf_range(0.85, 1.12)
 		plant_part(body, cylinder_mesh(0.0, cr, ch, 12), Color(base.r * g, base.g * g, base.b * g),
-				Vector3(0, h * 0.2 + t * h * 0.74 + ch * 0.4, 0))
+				Vector3(0, h * 0.2 + t * h * 0.74 + ch * 0.4, 0), Basis.IDENTITY, 0.4)
 	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.4})
 
 func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMaterial3D) -> void:
@@ -533,6 +539,8 @@ func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: Standa
 	m.stream.region_node(m.stream.region_key(x, z)).add_child(body)
 	body.global_position = Vector3(x, base_y - 2.0, z)   # sunk a little so it never floats
 	body.set_meta("climbable", true)   # beetles, spiders and termites can climb it
+	body.set_meta("burn_r", 5.0)
+	Registry.add(body, "plants")
 
 	# The trunk flares wider at the foot and narrows toward the top.
 	var tm := CylinderMesh.new()
@@ -554,15 +562,13 @@ func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: Standa
 
 	# A clump of leaf masses far overhead.
 	for i in rng.randi_range(5, 7):
-		var leaf_mat := StandardMaterial3D.new()
 		var g := rng.randf_range(0.8, 1.2)
-		leaf_mat.albedo_color = Color(0.10 * g, 0.50 * g, 0.08 * g)
-		leaf_mat.roughness = 0.9
 		var sm := SphereMesh.new()
 		sm.radius = 1.0
 		sm.height = 2.0
 		sm.radial_segments = 14
 		sm.rings = 8
+		var leaf_mat := PlantSway.leaf_material(Color(0.10 * g, 0.50 * g, 0.08 * g), sm, 0.5)   # canopies move in the wind
 		var leaves := MeshInstance3D.new()
 		leaves.mesh = sm
 		leaves.material_override = leaf_mat
@@ -809,6 +815,7 @@ func new_region_job(key: Vector2i) -> Dictionary:
 	for i in ceili(Main.FLORA_PATCHES_PER_REGION / 6.0):
 		items.append(["flora", 6])
 	items.append(["shore", 90])
+	items.append(["glade", 60])
 	items.append(["build_flora"])
 	items.append(["pickups"])
 	items.append(["relic"])
@@ -836,6 +843,8 @@ func run_region_item(job: Dictionary, item: Array) -> void:
 			region_flora(job, item[1])
 		"shore":
 			region_shore(job, item[1])
+		"glade":
+			region_glade(job, item[1])
 		"build_flora":
 			build_flora(job)
 		"pickups":
@@ -875,6 +884,9 @@ func region_tree(job: Dictionary) -> void:
 	var biome := terrain.biome_at(x, z)
 	if rng.randf() > Main.TREE_CHANCE[biome]:
 		return
+	var glade := terrain.glade_at(x, z)
+	if glade > 0.0 and rng.randf() < glade * 1.25:
+		return   # an open meadow: no trees
 	add_plant(x, z, rng, biome, get_bark())
 
 # Boulders, some with smaller rocks leaning against them.
@@ -890,6 +902,8 @@ func region_boulder(job: Dictionary) -> void:
 		return
 	if Vector2(x, z).distance_to(Main.STORAGE_XZ) < 6.0 + r:
 		return
+	if terrain.glade_at(x, z) > 0.3:
+		return   # no boulders in a meadow
 	var biome := terrain.biome_at(x, z)
 	if rng.randf() > Main.ROCK_CHANCE[biome]:
 		return
@@ -926,6 +940,9 @@ func region_grass(job: Dictionary, count: int) -> void:
 		if near_obstacle(cx, cz, 2.5):
 			continue
 		var d := grass_density_noise.get_noise_2d(cx, cz)
+		var glade := terrain.glade_at(cx, cz)
+		if glade > 0.0:
+			d = lerpf(d, 0.55, glade)   # a meadow is thick, even grass with no bare patches
 		if d < -0.45:
 			continue   # a bare patch
 		var blades := roundi(lerpf(2.0, 10.0, smoothstep(-0.2, 0.5, d)))
@@ -1239,6 +1256,37 @@ func region_shore(job: Dictionary, tries: int) -> void:
 			var n := 3 if species == 6 else rng.randi_range(1, 3)
 			for i in n:
 				add_flora_instance(buckets, species, sp.x + rng.randf_range(-1.6, 1.6), sp.y + rng.randf_range(-1.6, 1.6), rng)
+
+# Meadow flowers and mushrooms: dense patches of wildflowers with clusters of mushrooms among them.
+const GLADE_FLOWERS := [0, 0, 1, 2, 3, 3, 4, 19, 22]      # daisy, poppy, lupine, buttercup, pink bloom, clover, dandelion
+const GLADE_MUSHROOMS := [12, 13, 14, 15, 16]             # fly agaric, porcini, parasol, cluster, chanterelle
+
+func region_glade(job: Dictionary, tries: int) -> void:
+	var mid := region_spot(job, Main.REGION_SIZE * 0.5 - 0.01)
+	var near := terrain.glade_at(mid.x, mid.y)
+	var half := Main.REGION_SIZE * 0.5
+	for o in [Vector2(-half, -half), Vector2(half, -half), Vector2(-half, half), Vector2(half, half)]:
+		near = maxf(near, terrain.glade_at(mid.x + o.x, mid.y + o.y))
+	if near <= 0.0:
+		return   # no glade anywhere in this square
+	var rng: RandomNumberGenerator = job["rng"]
+	var buckets: Dictionary = job["flora"]
+	for t in tries:
+		var sp := region_spot(job, 0.0)
+		var g := terrain.glade_at(sp.x, sp.y)
+		if g < 0.25 or rng.randf() > g:
+			continue
+		if not inland(sp.x, sp.y) or terrain.near_pool(sp.x, sp.y):
+			continue
+		if Vector2(sp.x - m.storage_pos.x, sp.y - m.storage_pos.z).length() < Main.STORAGE_RADIUS + 3.0:
+			continue
+		var mushroom := rng.randf() < 0.28
+		var species: int = GLADE_MUSHROOMS[rng.randi() % GLADE_MUSHROOMS.size()] if mushroom else GLADE_FLOWERS[rng.randi() % GLADE_FLOWERS.size()]
+		var info: Array = Flora.PATCH[species]
+		var n := rng.randi_range(int(info[0]), int(info[1]))
+		var spread := float(info[2])
+		for i in n:
+			add_flora_instance(job["flora"], species, sp.x + rng.randf_range(-spread, spread), sp.y + rng.randf_range(-spread, spread), rng)
 
 func build_flora(job: Dictionary) -> void:
 	var buckets: Dictionary = job["flora"]
