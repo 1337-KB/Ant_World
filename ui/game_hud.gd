@@ -229,6 +229,7 @@ func setup_hud() -> void:
 		["silk", "Silk", Pickup.KINDS["silk"]["color"]],
 		["crystal", "Crystal", Pickup.KINDS["crystal"]["color"]],
 		["relic", "Relics", Pickup.KINDS["relic"]["color"]],
+		["shell", "Shells", Pickup.KINDS["shell"]["color"]],
 		["resin", "Resin", Pickup.KINDS["resin"]["color"]],
 		["soil", "Soil", Color(0.55, 0.36, 0.18)],
 		["water", "Water", Color(0.25, 0.55, 0.9)],

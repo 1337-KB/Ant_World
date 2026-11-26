@@ -103,6 +103,8 @@ func restore_ant() -> void:
 	for k in inv:
 		if ant.inventory.has(k):
 			ant.inventory[k] = int(inv[k])
+	ant.armor = clampi(int(a.get("armor", 0)), 0, Ant.ARMOR_MAX)
+	ant.show_armor()
 	ant.soil = float(a.get("soil", 0.0))
 	ant.water = float(a.get("water", 0.0))
 	ant.energy = float(a.get("energy", ant.energy))
@@ -217,7 +219,7 @@ func capture() -> Dictionary:
 		"ant": {
 			"xf": ant.global_transform, "health": ant.health, "role": ant.role,
 			"inv": ant.inventory.duplicate(), "soil": ant.soil, "water": ant.water,
-			"energy": ant.energy, "acid": ant.acid, "rocks": ant.rocks, "spawn": ant.spawn_point,
+			"armor": ant.armor, "energy": ant.energy, "acid": ant.acid, "rocks": ant.rocks, "spawn": ant.spawn_point,
 		},
 		"craft": {"items": m.crafting.items.duplicate(), "slots": m.crafting.slots.duplicate()},
 		"day_time": m.atmos.day_time,

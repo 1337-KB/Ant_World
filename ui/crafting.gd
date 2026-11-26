@@ -16,7 +16,7 @@ const RECIPES := {
 		"cost": {"fiber": 20},
 		"size": Vector3(1.6, 1.2, 1.6),
 		"color": Color(0.55, 0.36, 0.18),
-		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "glow": 100, "silk": 100, "resin": 100, "crystal": 100, "relic": 20, "soil": 150},   # most one box holds of each
+		"caps": {"sugar": 100, "pebble": 100, "fiber": 100, "glow": 100, "silk": 100, "resin": 100, "crystal": 100, "relic": 20, "shell": 100, "soil": 150},   # most one box holds of each
 	},
 	"barrel": {
 		"label": "Water barrel",
@@ -75,6 +75,27 @@ const RECIPES := {
 		"size": Vector3(2.4, 0.3, 2.4),
 		"color": Color(0.45, 0.9, 0.2),
 	},
+	"shell_armor": {
+		"label": "Shell plate",
+		"desc": "A pearl plate that you wear at once (not placed). Each plate cuts the damage you take by 12%. Up to 3 plates.",
+		"cost": {"shell": 6},
+		"size": Vector3(0.5, 0.2, 0.5),
+		"color": Color(0.96, 0.78, 0.84),
+	},
+	"shell_lamp": {
+		"label": "Shell lamp",
+		"desc": "A pearl shell that gives off a soft pink glow. A pretty light for tunnels and chambers.",
+		"cost": {"shell": 3},
+		"size": Vector3(0.9, 0.6, 0.9),
+		"color": Color(0.96, 0.78, 0.84),
+	},
+	"shell_cluster": {
+		"label": "Shell cluster",
+		"desc": "A pile of pearly shells. Decoration for your tunnels.",
+		"cost": {"shell": 2},
+		"size": Vector3(1.1, 0.5, 1.1),
+		"color": Color(0.96, 0.78, 0.84),
+	},
 	"collapse_trap": {
 		"label": "Collapse trap",
 		"desc": "Seals a tunnel. When something steps on it, soil drops from the ceiling and buries the spot, hurting nearby creatures for 40. One use. You can dig through it later.",
@@ -83,7 +104,7 @@ const RECIPES := {
 		"color": Color(0.55, 0.52, 0.5),
 	},
 }
-const ORDER := ["box", "barrel", "lamp", "crystal_lamp", "queen", "trap", "resin_trap", "pit_trap", "acid_trap", "collapse_trap"]
+const ORDER := ["box", "barrel", "lamp", "crystal_lamp", "queen", "trap", "resin_trap", "pit_trap", "acid_trap", "collapse_trap", "shell_armor", "shell_lamp", "shell_cluster"]
 
 var ant: Ant
 var progression: Progression   # decides which recipes are unlocked
@@ -116,6 +137,8 @@ func is_unlocked(type: String) -> bool:
 func can_craft(type: String) -> bool:
 	if not is_unlocked(type):
 		return false
+	if type == "shell_armor" and ant.armor >= Ant.ARMOR_MAX:
+		return false
 	var cost: Dictionary = RECIPES[type]["cost"]
 	for k in cost:
 		if ant.inventory[k] < cost[k]:
@@ -128,7 +151,10 @@ func craft(type: String) -> void:
 	var cost: Dictionary = RECIPES[type]["cost"]
 	for k in cost:
 		ant.inventory[k] -= cost[k]
-	add_item(type)
+	if type == "shell_armor":
+		ant.add_armor()   # worn straight away, never goes in the hotbar
+	else:
+		add_item(type)
 	crafted.emit(type)
 	refresh_menu()
 

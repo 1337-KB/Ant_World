@@ -68,6 +68,18 @@ func spawn_dragonfly(pos: Vector3) -> Creature:
 	d.set_active(not m.atmos.night_creatures)   # it hunts by day
 	return d
 
+func spawn_fish(pos: Vector3, lake: Dictionary, aggressive: bool) -> Fish:
+	var f := Fish.new()
+	f.ant = m.ant
+	f.terrain = m.terrain
+	f.lake = lake
+	f.aggressive = aggressive
+	f.home = pos
+	f.died.connect(_on_creature_died)
+	m.stream.region_node(m.stream.region_key(pos.x, pos.z)).add_child(f)
+	f.global_position = pos
+	return f
+
 func spawn_spider(pos: Vector3) -> Creature:
 	var sp := Spider.new()
 	sp.ant = m.ant
@@ -96,6 +108,10 @@ func respawn_creature(home: Vector3, kind: String) -> void:
 			spawn_centipede(home)
 		"dragonfly":
 			spawn_dragonfly(home)
+		"fish":
+			for lk in m.terrain.pools_at(home.x, home.z):
+				if lk.get("lake", false):
+					spawn_fish(home, lk, randf() < Main.FISH_AGGRESSIVE_SHARE)
 
 func spawn_beetle(pos: Vector3) -> Creature:
 	var b := Beetle.new()
@@ -160,6 +176,8 @@ func _on_creature_died(c: Creature) -> void:
 		m.get_tree().create_timer(Main.CENTIPEDE_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, "centipede"))
 	elif c is Dragonfly:
 		m.get_tree().create_timer(Main.DRAGONFLY_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, "dragonfly"))
+	elif c is Fish:
+		m.get_tree().create_timer(Main.FISH_RESPAWN_SECONDS).timeout.connect(respawn_creature.bind(home, "fish"))
 
 # ---------- Termite colonies ----------
 # When the region holding a mound is built, its colony moves in: the queen in her cell, a few

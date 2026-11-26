@@ -194,6 +194,57 @@ func _ready() -> void:
 		light.shadow_enabled = false   # set true for shadows, but many lamps with shadows gets slow
 		light.position.y = size.y * 0.25
 		add_child(light)
+	elif type == "shell_lamp" or type == "shell_cluster":
+		# Pearly scallops piled together. The lamp has a soft pink light inside.
+		var pearl := StandardMaterial3D.new()
+		pearl.albedo_color = Color(0.97, 0.8, 0.86)
+		pearl.roughness = 0.2
+		pearl.metallic = 0.25
+		var ridge := StandardMaterial3D.new()
+		ridge.albedo_color = Color(1.0, 0.94, 0.92)
+		ridge.roughness = 0.25
+		var lamp := type == "shell_lamp"
+		if lamp:
+			pearl.emission_enabled = true
+			pearl.emission = Color(1.0, 0.55, 0.7)
+			pearl.emission_energy_multiplier = 1.4
+		var count := 3 if lamp else 5
+		for i in count:
+			var a := TAU * float(i) / float(count) + 0.4
+			var r := 0.0 if (i == 0 and lamp) else size.x * 0.28
+			var shell_node := Node3D.new()
+			shell_node.position = Vector3(cos(a) * r, -size.y * 0.35 + (0.12 if i == 0 else 0.0), sin(a) * r)
+			shell_node.rotation = Vector3(randf_range(-0.5, -0.15), -a + PI * 0.5, 0)
+			add_child(shell_node)
+			var disc := MeshInstance3D.new()
+			var dsm := SphereMesh.new()
+			dsm.radius = 0.5
+			dsm.height = 1.0
+			dsm.radial_segments = 12
+			dsm.rings = 6
+			disc.mesh = dsm
+			disc.material_override = pearl
+			var s := size.x * (0.55 if i == 0 else 0.4)
+			disc.scale = Vector3(s, s * 0.28, s * 0.85)
+			shell_node.add_child(disc)
+			for j in 5:
+				var ang := lerpf(-0.9, 0.9, float(j) / 4.0)
+				var rb := MeshInstance3D.new()
+				var rbm := BoxMesh.new()
+				rbm.size = Vector3(s * 0.1, s * 0.1, s * 0.85)
+				rb.mesh = rbm
+				rb.material_override = ridge
+				rb.rotation.y = ang
+				rb.position = Vector3(sin(ang) * s * 0.28, s * 0.14, -cos(ang) * s * 0.28)
+				shell_node.add_child(rb)
+		if lamp:
+			var light := OmniLight3D.new()
+			light.light_color = Color(1.0, 0.65, 0.8)
+			light.light_energy = 1.6
+			light.omni_range = 14.0
+			light.shadow_enabled = false
+			light.position.y = size.y * 0.3
+			add_child(light)
 	elif type == "barrel":
 		var body := MeshInstance3D.new()
 		var cm := CylinderMesh.new()

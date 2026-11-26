@@ -137,6 +137,8 @@ func pick_target() -> void:
 
 # It only bothers with you when you are out on the surface, not deep in a tunnel.
 func ant_exposed() -> bool:
+	if ant.swimming:
+		return false   # it cannot see you under the water
 	return ant.global_position.y > ground_y(ant.global_position) - 3.0
 
 func cast(from: Vector3, to: Vector3) -> Dictionary:

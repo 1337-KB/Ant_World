@@ -27,6 +27,7 @@ var flora_mats := {}   # species id -> shared material
 var pebble_mat_shared: StandardMaterial3D
 var grass_density_noise: FastNoiseLite
 var pickup_sites := []   # each: {pos, kind}
+var lake_sites_made := {}   # regions whose lake-bed shells already have sites
 # ---------- Cave contents ----------
 # Once a column's deep ground exists, look for cave floors in it and furnish them:
 # glowing mushroom patches (which also drop Glow) and crystal clusters (more of them the deeper you go).
@@ -818,6 +819,7 @@ func new_region_job(key: Vector2i) -> Dictionary:
 	items.append(["glade", 60])
 	items.append(["build_flora"])
 	items.append(["pickups"])
+	items.append(["lake"])
 	items.append(["relic"])
 	items.append(["creatures"])
 	items.append(["colony"])
@@ -849,6 +851,8 @@ func run_region_item(job: Dictionary, item: Array) -> void:
 			build_flora(job)
 		"pickups":
 			region_pickups(job)
+		"lake":
+			region_lake(job)
 		"relic":
 			region_relic(job)
 		"creatures":
@@ -1314,6 +1318,117 @@ func build_flora(job: Dictionary) -> void:
 			recheck_dug_decor(m.stream.decor_sets[m.stream.decor_sets.size() - 1])
 
 # Resources sit at fixed spots. Each spot grows its resource back some time after you take it.
+# ---------- Under the lake ----------
+# Lake regions get shells on the bed, sea plants, lily pads on the surface and fish. Shells are
+# ordinary pickup sites (so they come back after being taken); the rest is rebuilt with the region.
+
+func region_lake(job: Dictionary) -> void:
+	var rkey: Vector2i = job["key"]
+	var rect := m.stream.region_rect(rkey)
+	var cx := rect.position.x + Main.REGION_SIZE * 0.5
+	var cz := rect.position.y + Main.REGION_SIZE * 0.5
+	var lake: Dictionary = {}
+	for p in terrain.pools_at(cx, cz):
+		if p.get("lake", false):
+			lake = p
+	if lake.is_empty():
+		return
+	var r: float = lake["radius"]
+	var mid_d := terrain.pool_dist(lake, cx, cz) / r   # as a share of the lake's radius
+	if mid_d > 0.82 + 26.0 / r:
+		return   # this region is nowhere near the water
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(rkey.x, rkey.y, 9001))
+	var level: float = lake["level0"]
+	var node := m.stream.region_node(rkey)
+
+	# Shell sites on the bed (first time only: after that the site list brings them back).
+	if not lake_sites_made.has(rkey):
+		lake_sites_made[rkey] = true
+		if not region_sites.has(rkey):
+			region_sites[rkey] = []
+		for t in Main.LAKE_SHELL_TRIES:
+			var sp := lake_spot(rect, rng)
+			var f := terrain.pool_dist(lake, sp.x, sp.y) / r
+			if f < 0.22 or f > 0.78:
+				continue
+			var gh := terrain.ground_height(sp.x, sp.y)
+			if gh > level - 2.0:
+				continue
+			pickup_sites.append({"pos": Vector3(sp.x, gh + 0.3, sp.y), "kind": "shell"})
+			region_sites[rkey].append(pickup_sites.size() - 1)
+			spawn_pickup(pickup_sites.size() - 1)
+
+	# Sea plants.
+	for t in Main.LAKE_PLANT_TRIES:
+		var sp := lake_spot(rect, rng)
+		var f := terrain.pool_dist(lake, sp.x, sp.y) / r
+		if f < 0.12 or f > 0.8:
+			continue
+		var gh := terrain.ground_height(sp.x, sp.y)
+		var water_h := level - gh
+		if water_h < 1.6:
+			continue
+		var pos := Vector3(sp.x, gh - 0.05, sp.y)
+		var roll := rng.randf()
+		if roll < 0.28:
+			LakeLife.kelp(node, pos, water_h - 0.6, rng)
+		elif roll < 0.78:
+			LakeLife.seagrass(node, pos, rng)
+		else:
+			LakeLife.sea_cabbage(node, pos, rng)
+
+	# Lily pads: small clusters, so there is usually one to swim to.
+	var placed: Array[Vector2] = []
+	var clusters := 1 + (1 if rng.randf() < 0.45 else 0)
+	for c_i in clusters:
+		for t in 12:
+			var sp := lake_spot(rect, rng)
+			var f := terrain.pool_dist(lake, sp.x, sp.y) / r
+			if f < 0.3 or f > 0.8:
+				continue
+			if level - terrain.ground_height(sp.x, sp.y) < 1.6:
+				continue
+			var ok := true
+			for q in placed:
+				if q.distance_to(sp) < 6.0:
+					ok = false
+			if not ok:
+				continue
+			var n := rng.randi_range(1, 3)
+			for i in n:
+				var a := rng.randf() * TAU
+				var off := Vector2(cos(a), sin(a)) * (0.0 if i == 0 else rng.randf_range(2.4, 3.6))
+				var pp := sp + off
+				if terrain.pool_dist(lake, pp.x, pp.y) / r > 0.82 or level - terrain.ground_height(pp.x, pp.y) < 1.2:
+					continue
+				var pad := LilyPad.new()
+				pad.lake = lake
+				pad.radius = rng.randf_range(1.7, 2.6)
+				pad.flower = rng.randf() < 0.3
+				node.add_child(pad)
+				pad.global_position = Vector3(pp.x, level + 0.02, pp.y)
+				placed.append(pp)
+			break
+
+	# Fish: only where the water is deep, a few aggressive among many passive.
+	if mid_d < 0.72:
+		for i in int(Main.FISH_PER_REGION + rng.randf()):
+			var sp := lake_spot(rect, rng)
+			if terrain.pool_dist(lake, sp.x, sp.y) / r > 0.7:
+				continue
+			var gh := terrain.ground_height(sp.x, sp.y)
+			if level - gh < 2.5:
+				continue
+			var y := rng.randf_range(gh + 0.8, level - 0.9)
+			m.pop.spawn_fish(Vector3(sp.x, y, sp.y), lake, rng.randf() < Main.FISH_AGGRESSIVE_SHARE)
+
+# A random point inside a region.
+func lake_spot(rect: Rect2, rng: RandomNumberGenerator) -> Vector2:
+	return Vector2(
+		rect.position.x + rng.randf_range(1.0, Main.REGION_SIZE - 1.0),
+		rect.position.y + rng.randf_range(1.0, Main.REGION_SIZE - 1.0))
+
 func region_pickups(job: Dictionary) -> void:
 	var rng: RandomNumberGenerator = job["rng"]
 	var rkey: Vector2i = job["key"]

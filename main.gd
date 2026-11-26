@@ -59,7 +59,8 @@ const SPIDERS_PER_REGION := 0.3
 const BEETLES_PER_REGION := 0.3
 const CENTIPEDES_PER_REGION := 0.25
 const DRAGONFLIES_PER_REGION := 0.15
-const BOSS_CHANCE := 0.12   # chance a region holds a boss creature
+const BOSS_CHANCE := 0.25   # chance a region is a boss candidate (spacing then thins them out)
+const BOSS_SPACING := 3     # no two bosses within this many regions (about 100 units)
 const REGION_BUDGET_MS := 4.0   # time per frame spent building region content
 const ROYAL_WALL := 6.0          # how thick the undiggable walls around a living queen's cell are
 const MOUND_CELL := 320         # the world is split into squares this big; each may hold a termite mound
@@ -114,6 +115,11 @@ const SPIDER_RESPAWN_SECONDS := 120.0
 const BEETLE_RESPAWN_SECONDS := 150.0
 const CENTIPEDE_RESPAWN_SECONDS := 150.0
 const DRAGONFLY_RESPAWN_SECONDS := 420.0
+const FISH_RESPAWN_SECONDS := 240.0
+const FISH_PER_REGION := 1.3            # in a lake region deep enough to hold fish
+const FISH_AGGRESSIVE_SHARE := 0.22     # about one fish in five is a biter
+const LAKE_SHELL_TRIES := 6             # shell sites tried per lake region (only deep bed counts)
+const LAKE_PLANT_TRIES := 26            # sea plants tried per lake region
 const PICKUP_RESPAWN_SECONDS := 90.0   # how long a spot takes to grow its resource back
 const PIECE_ORDER := ["pebble_wall", "fiber_floor", "pillar"]
 
@@ -311,7 +317,7 @@ func _ready() -> void:
 	abilities.setup_douse()
 	ant.died.connect(func(): show_message("You were killed. Respawned at your queen." if is_instance_valid(queen) else "You were killed. Respawned at the start."))
 	ant.dash_hit_creature.connect(func(_c): show_message("Dash hit!"))
-	crafting.crafted.connect(func(t: String): show_message("Crafted %s. It is in your hotbar." % Crafting.RECIPES[t]["label"]))
+	crafting.crafted.connect(func(t: String): show_message(("You are wearing %d shell plate(s)." % ant.armor) if t == "shell_armor" else ("Crafted %s. It is in your hotbar." % Crafting.RECIPES[t]["label"])))
 
 func make_far_terrain(radius: float, step: float, hole: float, sink: float, rebuild: float, tree_skip: float, tree_chance: float, mounds: bool) -> FarTerrain:
 	var ft := FarTerrain.new()

@@ -48,6 +48,8 @@ const ROLES := [
 	# Soldier: normal speed, tough, a powerful long acid spray, carries only soil and water.
 	{"speed": 1.0, "health": 160.0, "spray_range": 2.6, "spray_dmg": 1.3, "carry": 0.0, "soil": 1.0, "water": 1.0, "pickup": 1.0, "dig_max": 2.5, "dash_dmg": 2.25},
 ]
+const ARMOR_MAX := 3            # pearl shell plates you can wear
+const ARMOR_REDUCTION := 0.12   # damage each plate takes off every hit
 const WADE_SLOW := 0.6       # walking speed in water, as a fraction of normal
 const SWIM_SPEED := 3.6      # swimming speed
 const FLOAT_DEPTH := 0.35    # how far under the surface the body rests when you just float
@@ -92,6 +94,7 @@ var sprint_cost_mult := 1.0    # set by the biome: heat drains sprint energy fas
 var has_queen := false   # set by main every frame
 var water_surface: Callable   # (position) -> water level there, or a very low number if not in water. Set by main.
 var swimming := false
+var armor := 0               # pearl shell plates worn (crafted from shells)
 var acid := ACID_MAX          # fuel for the acid spray
 var acid_locked := false      # true after running dry, until it refills a bit
 var energy := ENERGY_MAX      # sprint energy
@@ -102,7 +105,7 @@ var focus_time := 0.0
 var webbed_time := 0.0          # stuck in web (a boss spider's shot): cannot walk, jump or dash
 var web_cocoon: MeshInstance3D
 var controls_locked := false   # true while a menu is open: no walking, jumping, or depositing
-var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0, "resin": 0, "crystal": 0, "relic": 0}
+var inventory := {"sugar": 0, "pebble": 0, "fiber": 0, "glow": 0, "silk": 0, "resin": 0, "crystal": 0, "relic": 0, "shell": 0}
 var soil := 0.0              # filled by digging
 var water := 0.0             # filled by drinking at pools
 var poison_time := 0.0        # seconds of poison left. Eating sugar cures it.
@@ -665,10 +668,40 @@ func load_slow() -> float:
 func take_damage(amount: float) -> void:
 	if invuln > 0.0:
 		return   # dodging
-	health -= amount
+	health -= amount * (1.0 - ARMOR_REDUCTION * float(armor))
 	if health <= 0.0:
 		died.emit()
 		respawn()
+
+# Wears one more pearl plate. Each shows as a small shell on the back.
+var armor_plates: Array = []
+func add_armor() -> void:
+	if armor >= ARMOR_MAX:
+		return
+	armor += 1
+	show_armor()
+
+func show_armor() -> void:
+	while armor_plates.size() < armor:
+		var plate := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = 0.5
+		sm.height = 1.0
+		sm.radial_segments = 12
+		sm.rings = 6
+		plate.mesh = sm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.98, 0.82, 0.88)
+		mat.roughness = 0.2
+		mat.metallic = 0.3
+		mat.emission_enabled = true
+		mat.emission = Color(0.5, 0.3, 0.4)
+		mat.emission_energy_multiplier = 0.4
+		plate.material_override = mat
+		plate.scale = Vector3(0.42, 0.1, 0.3)
+		plate.position = Vector3(0, 0.3, -0.15 + 0.3 * float(armor_plates.size()))
+		model.add_child(plate)
+		armor_plates.append(plate)
 
 func apply_poison(seconds: float, dps: float) -> void:
 	poison_time = maxf(poison_time, seconds)
@@ -739,6 +772,13 @@ func swim(delta: float, depth: float) -> void:
 
 	velocity = velocity.lerp(target, minf(1.0, 5.0 * delta))
 	move_and_slide()
+	# Bumping the edge of a lily pad while swimming hops you up onto it.
+	if move.length() > 0.0:
+		for i in get_slide_collision_count():
+			var hit := get_slide_collision(i)
+			if hit.get_collider() is LilyPad and hit.get_normal().y < 0.6:
+				velocity.y = maxf(velocity.y, 5.0)
+				break
 	collect_nearby()
 	if global_position.y < -120.0:
 		respawn()
