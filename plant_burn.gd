@@ -119,6 +119,8 @@ static func charcoal() -> StandardMaterial3D:
 
 # Leaves and needles are spheres and cones; trunks and branches are cylinders.
 func is_leafy(mi: MeshInstance3D) -> bool:
+	if mi.has_meta("leafy"):
+		return true
 	if mi.mesh is SphereMesh:
 		return true
 	if mi.mesh is CylinderMesh:

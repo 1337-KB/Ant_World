@@ -307,7 +307,7 @@ func add_plant(x: float, z: float, rng: RandomNumberGenerator, biome: int, bark:
 				if rng.randf() < 0.5:
 					add_shrub(x + rng.randf_range(-3.0, 3.0), z + rng.randf_range(-3.0, 3.0), rng)
 		_:
-			if rng.randf() < 0.45:
+			if rng.randf() < 0.65:
 				add_spruce(x, z, rng)
 			else:
 				add_round_tree(x, z, rng, bark)
@@ -405,32 +405,7 @@ func add_cactus(x: float, z: float, rng: RandomNumberGenerator) -> void:
 
 # Savanna: an acacia with a thin, curving trunk and a wide, layered, flat-topped canopy.
 func add_acacia(x: float, z: float, rng: RandomNumberGenerator) -> void:
-	var body := new_plant_body(x, z)
-	var h := rng.randf_range(18.0, 27.0)
-	var r := rng.randf_range(1.0, 1.5)
-	var facing := rng.randf() * TAU
-	var lean := rng.randf_range(0.05, 0.2)
-	var seg := (h + 1.0) / 3.0
-	var pos := Vector3.ZERO
-	for k in 3:
-		var tb := Basis(Vector3.UP, facing) * Basis(Vector3.RIGHT, lean * float(k + 1) * (1.0 if k % 2 == 0 else -0.6))
-		var tm := cylinder_mesh(r * (1.15 - 0.3 * float(k + 1)), r * (1.15 - 0.3 * float(k)), seg, 10)
-		var mid := pos + tb * Vector3(0, seg * 0.5, 0)
-		plant_part(body, tm, Color(0.34, 0.25, 0.17), mid, tb)
-		var col := CollisionShape3D.new()
-		col.shape = tm.create_convex_shape(true, true)
-		col.transform = Transform3D(tb, mid)
-		body.add_child(col)
-		pos += tb * Vector3(0, seg, 0)
-	# Layered canopy: darker underneath, lighter on top.
-	for i in rng.randi_range(2, 3):
-		var w := rng.randf_range(9.0, 14.0)
-		var t := float(i) / 2.0
-		var leaf := Color(0.22, 0.34, 0.10).lerp(Color(0.38, 0.52, 0.14), t)
-		var mi := plant_part(body, sphere_mesh(), leaf,
-				pos + Vector3(rng.randf_range(-3.0, 3.0), 0.9 * float(i), rng.randf_range(-3.0, 3.0)), Basis.IDENTITY, 0.5)
-		mi.scale = Vector3(w, 1.0 + 0.2 * float(i), w)
-	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.4})
+	Trees.acacia(self, x, z, rng)
 	# Shrubs often grow in the tree's shade.
 	if rng.randf() < 0.35:
 		for i in rng.randi_range(1, 2):
@@ -457,131 +432,46 @@ func add_shrub(x: float, z: float, rng: RandomNumberGenerator) -> void:
 
 # Swamp: a short, dark, drooping willow with hanging vines.
 func add_willow(x: float, z: float, rng: RandomNumberGenerator) -> void:
-	var body := new_plant_body(x, z)
-	var h := rng.randf_range(15.0, 22.0)
-	var r := rng.randf_range(2.0, 2.8)
-	var tm := cylinder_mesh(r * 0.7, r * 1.4, h + 1.0, 12)
-	plant_part(body, tm, Color(0.24, 0.19, 0.13), Vector3(0, (h + 1.0) * 0.5, 0))
-	trunk_collision(body, tm, Vector3(0, (h + 1.0) * 0.5, 0))
-	for i in rng.randi_range(3, 5):
-		var w := rng.randf_range(6.0, 9.0)
-		var mi := plant_part(body, sphere_mesh(), Color(0.10, 0.32, 0.14),
-				Vector3(rng.randf_range(-4.0, 4.0), h + rng.randf_range(-1.5, 2.0), rng.randf_range(-4.0, 4.0)), Basis.IDENTITY, 0.5)
-		mi.scale = Vector3(w, w * 0.6, w)
-	for i in 12:
-		var ang := rng.randf() * TAU
-		var d := rng.randf_range(3.0, 8.0)
-		var vlen := rng.randf_range(5.0, 10.0)
-		plant_part(body, cylinder_mesh(0.1, 0.16, vlen, 4), Color(0.20, 0.42, 0.20),
-				Vector3(cos(ang) * d, h - vlen * 0.5 + 1.0, sin(ang) * d))
-	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.4})
+	Trees.willow(self, x, z, rng)
 
 # Tundra: a bare, dead tree with crooked branches and no leaves.
 func add_dead_tree(x: float, z: float, rng: RandomNumberGenerator) -> void:
-	var body := new_plant_body(x, z)
-	var h := rng.randf_range(16.0, 25.0)
-	var r := rng.randf_range(1.2, 1.8)
-	var bark := Color(0.38, 0.33, 0.30)
-	var tm := cylinder_mesh(r * 0.4, r * 1.2, h + 1.0, 8)
-	plant_part(body, tm, bark, Vector3(0, (h + 1.0) * 0.5, 0))
-	trunk_collision(body, tm, Vector3(0, (h + 1.0) * 0.5, 0))
-	for i in rng.randi_range(4, 6):
-		var blen := rng.randf_range(6.0, 10.0)
-		var attach := Vector3(0, h * rng.randf_range(0.5, 0.95), 0)
-		var tilt := rng.randf_range(0.8, 1.3)
-		var bb := Basis(Vector3.UP, rng.randf() * TAU) * Basis(Vector3.RIGHT, tilt)
-		plant_part(body, cylinder_mesh(0.12, 0.45, blen, 6), bark, attach + bb * Vector3(0, blen * 0.5, 0), bb)
-	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.3})
+	Trees.dead(self, x, z, rng)
 
 # Highlands and tundra: a tall pine made of stacked cones.
 func add_pine(x: float, z: float, rng: RandomNumberGenerator, leaf: Color) -> void:
-	var body := new_plant_body(x, z)
-	var h := rng.randf_range(22.0, 32.0)
-	var r := rng.randf_range(1.2, 1.7)
-	var tm := cylinder_mesh(r * 0.5, r * 1.2, h * 0.7, 10)
-	plant_part(body, tm, Color(0.30, 0.20, 0.12), Vector3(0, h * 0.35, 0))
-	trunk_collision(body, tm, Vector3(0, h * 0.35, 0))
-	var layers := 4
-	for i in layers:
-		var t := float(i) / float(layers - 1)
-		var cr := lerpf(7.5, 3.0, t)
-		var ch := 9.0
-		var g := rng.randf_range(0.9, 1.1)
-		plant_part(body, cylinder_mesh(0.0, cr, ch, 12), Color(leaf.r * g, leaf.g * g, leaf.b * g),
-				Vector3(0, h * 0.3 + t * h * 0.6 + ch * 0.4, 0), Basis.IDENTITY, 0.4)
-	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.4})
+	Trees.pine(self, x, z, rng, leaf)   # see trees.gd
 
 # A tall forest spruce: a thin trunk and many stacked, narrowing skirts of needles that droop at the tips.
 func add_spruce(x: float, z: float, rng: RandomNumberGenerator) -> void:
-	var body := new_plant_body(x, z)
-	var h := rng.randf_range(30.0, 46.0)
-	var r := rng.randf_range(0.9, 1.4)
-	var tm := cylinder_mesh(r * 0.45, r * 1.1, h * 0.8, 10)
-	plant_part(body, tm, Color(0.27, 0.18, 0.11), Vector3(0, h * 0.4, 0))
-	trunk_collision(body, tm, Vector3(0, h * 0.4, 0))
-	var base := Color(0.07, 0.24, 0.13).lerp(Color(0.12, 0.32, 0.17), rng.randf())
-	var layers := rng.randi_range(6, 8)
-	var widest := rng.randf_range(6.5, 8.5)
-	for i in layers:
-		var t := float(i) / float(layers - 1)
-		var cr := lerpf(widest, 1.2, pow(t, 0.9))
-		var ch := lerpf(8.0, 5.0, t)
-		var g := rng.randf_range(0.85, 1.12)
-		plant_part(body, cylinder_mesh(0.0, cr, ch, 12), Color(base.r * g, base.g * g, base.b * g),
-				Vector3(0, h * 0.2 + t * h * 0.74 + ch * 0.4, 0), Basis.IDENTITY, 0.4)
-	add_obstacle({"pos": Vector3(x, terrain.ground_height(x, z), z), "radius": r * 1.4})
+	Trees.spruce(self, x, z, rng)
 
-func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: StandardMaterial3D) -> void:
-	var r := rng.randf_range(2.4, 3.4)          # trunk radius
-	var h := rng.randf_range(26.0, 38.0)        # height above the ground
-	var base_y := terrain.ground_height(x, z)
+# Oaks have a wide crown, so each one keeps this far from the next oak. Otherwise the branches run into each other.
+const OAK_SPACING := 34.0
+var oak_grid := {}   # 40-unit squares -> the oak positions inside them
 
-	var body := StaticBody3D.new()
-	body.collision_layer = 1
-	body.collision_mask = 0
-	m.stream.region_node(m.stream.region_key(x, z)).add_child(body)
-	body.global_position = Vector3(x, base_y - 2.0, z)   # sunk a little so it never floats
-	body.set_meta("climbable", true)   # beetles, spiders and termites can climb it
-	body.set_meta("burn_r", 5.0)
-	Registry.add(body, "plants")
+func oak_too_close(x: float, z: float) -> bool:
+	var cx := floori(x / 40.0)
+	var cz := floori(z / 40.0)
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var list: Array = oak_grid.get(Vector2i(cx + dx, cz + dz), [])
+			for q: Vector2 in list:
+				var d := q.distance_to(Vector2(x, z))
+				if d > 0.5 and d < OAK_SPACING:   # (an oak at the very same spot is this tree being rebuilt)
+					return true
+	return false
 
-	# The trunk flares wider at the foot and narrows toward the top.
-	var tm := CylinderMesh.new()
-	tm.bottom_radius = r * 1.5
-	tm.top_radius = r * 0.75
-	tm.height = h + 2.0
-	tm.radial_segments = 16
-	tm.rings = 4
-	var trunk := MeshInstance3D.new()
-	trunk.mesh = tm
-	trunk.material_override = bark
-	trunk.position = Vector3(0, (h + 2.0) * 0.5, 0)
-	fade_far(trunk)
-	body.add_child(trunk)
-	var col := CollisionShape3D.new()
-	col.shape = tm.create_convex_shape(true, true)
-	col.position = trunk.position
-	body.add_child(col)
-
-	# A clump of leaf masses far overhead.
-	for i in rng.randi_range(5, 7):
-		var g := rng.randf_range(0.8, 1.2)
-		var sm := SphereMesh.new()
-		sm.radius = 1.0
-		sm.height = 2.0
-		sm.radial_segments = 14
-		sm.rings = 8
-		var leaf_mat := PlantSway.leaf_material(Look.mute(Color(0.10 * g, 0.50 * g, 0.08 * g)), sm, 0.5)   # canopies move in the wind
-		var leaves := MeshInstance3D.new()
-		leaves.mesh = sm
-		leaves.material_override = leaf_mat
-		fade_far(leaves)
-		var s := rng.randf_range(6.0, 10.0)
-		leaves.scale = Vector3(s, s * 0.7, s)
-		leaves.position = Vector3(rng.randf_range(-6.0, 6.0), h + 2.0 + rng.randf_range(-3.0, 4.0), rng.randf_range(-6.0, 6.0))
-		body.add_child(leaves)
-
-	add_obstacle({"pos": Vector3(x, base_y, z), "radius": r * 1.5})
+func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, _bark: StandardMaterial3D) -> void:
+	if oak_too_close(x, z):
+		return
+	var key := Vector2i(floori(x / 40.0), floori(z / 40.0))
+	if not oak_grid.has(key):
+		oak_grid[key] = []
+	var known: Array = oak_grid[key]
+	if not known.has(Vector2(x, z)):
+		known.append(Vector2(x, z))
+	OakTree.build(self, x, z, rng)   # see oak_tree.gd
 
 func add_rock(x: float, z: float, r: float, rng: RandomNumberGenerator, biome: int = 0) -> void:
 	var mesh := make_rock_mesh(rng, r)
