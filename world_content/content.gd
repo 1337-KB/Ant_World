@@ -235,7 +235,7 @@ func obstacles_near(x: float, z: float) -> Array:
 	return out
 
 func near_obstacle(x: float, z: float, margin: float = 1.5) -> bool:
-	if terrain.near_mound(x, z, margin):
+	if terrain.near_mound(x, z, margin) or terrain.cabin_near(x, z, margin):
 		return true
 	for o in obstacles_near(x, z):
 		var op: Vector3 = o["pos"]
@@ -245,6 +245,7 @@ func near_obstacle(x: float, z: float, margin: float = 1.5) -> bool:
 
 # A rough, grainy material projected from all sides. uv_scale stretches the grain along an axis.
 func make_grain_material(color: Color, uv_scale: Vector3, bump: float) -> StandardMaterial3D:
+	color = Look.mute(color)
 	if grain_albedo == null:
 		var grain := FastNoiseLite.new()
 		grain.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
@@ -338,6 +339,7 @@ func fade_far(mi: MeshInstance3D) -> void:
 
 # sway > 0 makes the part move in the wind (leaves, needles, bushes); 0 keeps it rigid (trunks, branches).
 func plant_part(body: Node3D, mesh: Mesh, color: Color, pos: Vector3, orient: Basis = Basis.IDENTITY, sway: float = 0.0) -> MeshInstance3D:
+	color = Look.mute(color)   # natural, earthy tones (look.gd)
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.material_override = PlantSway.leaf_material(color, mesh, sway) if sway > 0.0 else plant_mat(color)
@@ -569,7 +571,7 @@ func add_round_tree(x: float, z: float, rng: RandomNumberGenerator, bark: Standa
 		sm.height = 2.0
 		sm.radial_segments = 14
 		sm.rings = 8
-		var leaf_mat := PlantSway.leaf_material(Color(0.10 * g, 0.50 * g, 0.08 * g), sm, 0.5)   # canopies move in the wind
+		var leaf_mat := PlantSway.leaf_material(Look.mute(Color(0.10 * g, 0.50 * g, 0.08 * g)), sm, 0.5)   # canopies move in the wind
 		var leaves := MeshInstance3D.new()
 		leaves.mesh = sm
 		leaves.material_override = leaf_mat
@@ -817,6 +819,7 @@ func new_region_job(key: Vector2i) -> Dictionary:
 		items.append(["flora", 6])
 	items.append(["shore", 90])
 	items.append(["glade", 60])
+	items.append(["cabin"])
 	items.append(["build_flora"])
 	items.append(["pickups"])
 	items.append(["lake"])
@@ -847,6 +850,8 @@ func run_region_item(job: Dictionary, item: Array) -> void:
 			region_shore(job, item[1])
 		"glade":
 			region_glade(job, item[1])
+		"cabin":
+			region_cabin(job)
 		"build_flora":
 			build_flora(job)
 		"pickups":
@@ -1265,6 +1270,20 @@ func region_shore(job: Dictionary, tries: int) -> void:
 const GLADE_FLOWERS := [0, 0, 1, 2, 3, 3, 4, 19, 22]      # daisy, poppy, lupine, buttercup, pink bloom, clover, dandelion
 const GLADE_MUSHROOMS := [12, 13, 14, 15, 16]             # fly agaric, porcini, parasol, cluster, chanterelle
 
+# A log cabin stands in the middle of some forest glades (see cabin.gd).
+func region_cabin(job: Dictionary) -> void:
+	var key: Vector2i = job["key"]
+	var rect := m.stream.region_rect(key)
+	var cx := floori((rect.position.x + Main.REGION_SIZE * 0.5) / float(Terrain.GLADE_CELL))
+	var cz := floori((rect.position.y + Main.REGION_SIZE * 0.5) / float(Terrain.GLADE_CELL))
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var site := terrain.glade_site(Vector2i(cx + dx, cz + dz))
+			if site.is_empty() or not site.get("cabin", false):
+				continue
+			if m.stream.region_key(float(site["x"]), float(site["z"])) == key:
+				Cabin.build(self, site)
+
 func region_glade(job: Dictionary, tries: int) -> void:
 	var mid := region_spot(job, Main.REGION_SIZE * 0.5 - 0.01)
 	var near := terrain.glade_at(mid.x, mid.y)
@@ -1455,8 +1474,27 @@ func region_pickups(job: Dictionary) -> void:
 		region_sites[rkey].append(pickup_sites.size() - 1)
 		spawn_pickup(pickup_sites.size() - 1)
 
+# Each region has a fixed boss roll. A boss only spawns in a region whose roll is the lowest among
+# every region within BOSS_SPACING regions that would also hold one, so two bosses are never close.
+func boss_roll_of(key: Vector2i) -> float:
+	return float(hash(Vector3i(key.x, key.y, 777)) & 0xFFFFF) / float(0x100000)
+
+func boss_allowed(key: Vector2i) -> bool:
+	var mine := boss_roll_of(key)
+	if mine >= Main.BOSS_CHANCE:
+		return false
+	for dx in range(-Main.BOSS_SPACING, Main.BOSS_SPACING + 1):
+		for dy in range(-Main.BOSS_SPACING, Main.BOSS_SPACING + 1):
+			if dx == 0 and dy == 0:
+				continue
+			var other := boss_roll_of(Vector2i(key.x + dx, key.y + dy))
+			if other < Main.BOSS_CHANCE and (other < mine or (other == mine and (dx < 0 or (dx == 0 and dy < 0)))):
+				return false
+	return true
+
 func region_creatures(job: Dictionary) -> void:
 	var rng: RandomNumberGenerator = job["rng"]
+	var rkey: Vector2i = job["key"]
 	for i in int(Main.FIREFLIES_PER_REGION + rng.randf()):
 		var sp := region_spot(job, 3.0)
 		if inland(sp.x, sp.y) and rng.randf() <= Main.FIREFLY_CHANCE[terrain.biome_at(sp.x, sp.y)]:
@@ -1490,8 +1528,15 @@ func region_creatures(job: Dictionary) -> void:
 			continue   # none right over the start
 		m.pop.spawn_dragonfly(Vector3(sp.x, terrain.ground_height(sp.x, sp.y) + randf_range(7.0, 12.0), sp.y))
 	# Now and then a region holds a boss: one big, tough creature of the same kinds.
-	if rng.randf() < Main.BOSS_CHANCE:
+	var boss_roll := rng.randf()
+	if boss_roll < Main.BOSS_CHANCE and boss_allowed(rkey):
 		var bp := region_spot(job, 6.0)
-		var kind: String = Population.BOSS_KINDS[rng.randi() % Population.BOSS_KINDS.size()]
-		if inland(bp.x, bp.y) and bp.distance_to(Main.STORAGE_XZ) > 80.0 and not terrain.near_pool(bp.x, bp.y, 3.0) and not near_obstacle(bp.x, bp.y, 3.0):
+		# Each boss lives in its own biome only (Main.BOSS_HOMES); a biome with no boss gets none.
+		var here := terrain.biome_at(bp.x, bp.y)
+		var options: Array = []
+		for k in Population.BOSS_KINDS:
+			if here in Main.BOSS_HOMES[k]:
+				options.append(k)
+		var kind: String = options[rng.randi() % options.size()] if not options.is_empty() else ""
+		if kind != "" and inland(bp.x, bp.y) and bp.distance_to(Main.STORAGE_XZ) > 80.0 and not terrain.near_pool(bp.x, bp.y, 3.0) and not near_obstacle(bp.x, bp.y, 3.0):
 			m.pop.spawn_boss(kind, Vector3(bp.x, terrain.ground_height(bp.x, bp.y) + 0.5, bp.y))

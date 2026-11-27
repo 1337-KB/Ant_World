@@ -100,7 +100,7 @@ static func vertex_color(mat: int, wp: Vector3, normal: Vector3,
 	var depth := 0.55 + 0.45 * smoothstep(8.0, 44.0, wp.y)
 
 	var k := shade * depth
-	return Color(base.r * k, base.g * k, base.b * k)
+	return Look.mute(Color(base.r * k, base.g * k, base.b * k))
 
 static func _pidx(x: int, y: int, z: int) -> int:
 	return (x + 1) + (z + 1) * PAD + (y + 1) * PAD * PAD
@@ -249,7 +249,9 @@ static func build_with(near: Array, cpos: Vector3i) -> ArrayMesh:
 				verts.append(pos)
 				normals.append(normal)
 				var wp := Vector3(origin) + pos
-				colors.append(vertex_color(mat, wp, normal, vein_noise, speck_noise, blotch_noise))
+				var vc := vertex_color(mat, wp, normal, vein_noise, speck_noise, blotch_noise)
+				vc.a = float(mat) / 32.0   # the ground shader reads which earth this is from the alpha
+				colors.append(vc)
 
 	# 3. Connect vertices: each edge where density changes sign becomes one quad
 	#    made from the 4 cells that share that edge.

@@ -902,7 +902,8 @@ func glade_site(cell: Vector2i) -> Dictionary:
 	var site := {}
 	var start_cell := Vector2i(floori(START_GLADE.x / float(GLADE_CELL)), floori(START_GLADE.y / float(GLADE_CELL)))
 	if cell == start_cell:
-		site = {"x": START_GLADE.x, "z": START_GLADE.y, "R": START_GLADE.z}
+		# The big glade near the start holds a log cabin, its door facing the starting spot.
+		site = {"x": START_GLADE.x, "z": START_GLADE.y, "R": START_GLADE.z, "cabin": true, "yaw": atan2(95.0, -110.0)}
 	else:
 		var rng := cell_rng(cell, 4242)
 		var origin := Vector2(cell) * float(GLADE_CELL)
@@ -915,7 +916,7 @@ func glade_site(cell: Vector2i) -> Dictionary:
 				if Vector2(x - float(p["x"]), z - float(p["z"])).length() < float(p["radius"]) * 1.5 + rad:
 					wet = true
 			if not wet:
-				site = {"x": x, "z": z, "R": rad}
+				site = {"x": x, "z": z, "R": rad, "cabin": rng.randf() < 0.5, "yaw": rng.randf() * TAU}   # about half of the glades hold a cabin
 	glade_sites[cell] = site
 	return site
 
@@ -934,6 +935,27 @@ func glade_at(x: float, z: float) -> float:
 			d += noise.get_noise_2d(x * 0.04, z * 0.04) * rad * 0.18   # an uneven edge, not a perfect circle
 			best = maxf(best, 1.0 - smoothstep(rad * 0.7, rad, d))
 	return best
+
+# Is this spot on or close to a log cabin (its walls, porch and yard)? Trees, grass and flowers keep out.
+func cabin_near(x: float, z: float, margin: float = 0.0) -> bool:
+	var cx := floori(x / float(GLADE_CELL))
+	var cz := floori(z / float(GLADE_CELL))
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var s := glade_site(Vector2i(cx + dx, cz + dz))
+			if s.is_empty() or not s.get("cabin", false):
+				continue
+			var l := cabin_local(s, x, z)
+			if absf(l.x) < Cabin.W * 0.5 + 2.5 + margin and l.y > -Cabin.D * 0.5 - 2.5 - margin and l.y < Cabin.D * 0.5 + 9.0 + margin:
+				return true
+	return false
+
+# A world position as seen from the cabin's own frame: x across the front, y toward the door (the front).
+func cabin_local(site: Dictionary, x: float, z: float) -> Vector2:
+	var yaw: float = site["yaw"]
+	var dx := x - float(site["x"])
+	var dz := z - float(site["z"])
+	return Vector2(dx * cos(yaw) - dz * sin(yaw), dx * sin(yaw) + dz * cos(yaw))
 
 func cell_rng(cell: Vector2i, salt: int) -> RandomNumberGenerator:
 	var rng := RandomNumberGenerator.new()

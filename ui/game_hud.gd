@@ -167,6 +167,16 @@ func update_map(delta: float) -> void:
 			var mp := Vector2(float(mnd["x"]), float(mnd["z"]))
 			if mp.distance_to(Vector2(m.ant.global_position.x, m.ant.global_position.z)) < 900.0:
 				m.world_map.note_mound(mp, mnd["dead"])
+	# Log cabins too.
+	var gcell := Vector2i(floori(m.ant.global_position.x / float(Terrain.GLADE_CELL)), floori(m.ant.global_position.z / float(Terrain.GLADE_CELL)))
+	for dx in range(-3, 4):
+		for dz in range(-3, 4):
+			var site := m.terrain.glade_site(gcell + Vector2i(dx, dz))
+			if site.is_empty() or not site.get("cabin", false):
+				continue
+			var gp := Vector2(float(site["x"]), float(site["z"]))
+			if gp.distance_to(Vector2(m.ant.global_position.x, m.ant.global_position.z)) < 900.0:
+				m.world_map.note_cabin(gp)
 	# Lakes show up the same way, within about 900 units.
 	var pcell := Vector2i(floori(m.ant.global_position.x / Main.POOL_CELL), floori(m.ant.global_position.z / Main.POOL_CELL))
 	for dx in range(-4, 5):

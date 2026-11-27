@@ -87,8 +87,8 @@ func apply() -> void:
 	env.glow_bloom = 0.04 if q > 0 else 0.0
 	env.glow_hdr_scale = 2.0
 	env.tonemap_white = 6.0
-	env.adjustment_saturation = 1.2 if q == 0 else 1.28
-	env.adjustment_contrast = 1.08 if q == 0 else 1.12
+	env.adjustment_saturation = 0.92 if q == 0 else 0.95
+	env.adjustment_contrast = 1.05 if q == 0 else 1.08
 
 	# Depth of field: the far distance goes soft. Nothing near you is blurred, so the ant stays crisp.
 	attributes.dof_blur_far_enabled = q >= 1

@@ -119,16 +119,16 @@ func tree_color(biome: int, h: int) -> Color:
 	var g := 0.85 + 0.3 * float((h >> 16) & 255) / 255.0
 	match biome:
 		0:
-			return Color(0.07 * g, 0.26 * g, 0.13 * g)
+			return Look.mute(Color(0.07 * g, 0.26 * g, 0.13 * g))
 		2:
-			return Color(0.08 * g, 0.28 * g, 0.14 * g)
+			return Look.mute(Color(0.08 * g, 0.28 * g, 0.14 * g))
 		3:
-			return Color(0.6 * g, 0.76 * g, 0.74 * g)
+			return Look.mute(Color(0.6 * g, 0.76 * g, 0.74 * g))
 	return Color(0, 0, 0, 0)
 
 func color_of(kind: int) -> Color:
 	if not colors_cache.has(kind):
-		colors_cache[kind] = SurfaceMesher.block_color(kind)
+		colors_cache[kind] = Look.mute(SurfaceMesher.block_color(kind))
 	return colors_cache[kind]
 
 # Called every frame with where you are.

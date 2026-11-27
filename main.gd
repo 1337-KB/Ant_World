@@ -33,7 +33,7 @@ const BIOME_RESOURCES := [                             # what the resource sites
 	["sugar", "sugar", "fiber", "pebble"],
 	["sugar", "fiber", "fiber", "pebble"],
 ]
-const HALF := 7200   # the world is 2 * HALF units across (multiple of 16). 7200 is about 20 minutes of walking from the start to the river.
+const HALF := 12000   # the world is 2 * HALF units across (multiple of 16): 24000 across. 12000 is about 33 minutes of walking from the start to the river.
 const LAND := HALF - 24   # trees, pools, grass... stay inside this, clear of the river
 const BIOME_FREQ := 0.002   # lower = bigger biomes. 0.002 means a biome is roughly 500 units across.
 const HEIGHT_CHUNKS := 6      # chunks stack up to this layer, so the top of the world is 16 * this high (termite mounds are tall)
@@ -60,6 +60,11 @@ const BEETLES_PER_REGION := 0.3
 const CENTIPEDES_PER_REGION := 0.25
 const DRAGONFLIES_PER_REGION := 0.15
 const BOSS_CHANCE := 0.25   # chance a region is a boss candidate (spacing then thins them out)
+const BOSS_HOMES := {                 # the only biome(s) each boss spawns in
+	"spider": [FOREST],               # Broodmother Spider: the forest
+	"beetle": [HIGHLANDS],            # Ironback Beetle: the rocky highlands
+	"centipede": [SWAMP],             # Elder Centipede: the swamp
+}
 const BOSS_SPACING := 3     # no two bosses within this many regions (about 100 units)
 const REGION_BUDGET_MS := 4.0   # time per frame spent building region content
 const ROYAL_WALL := 6.0          # how thick the undiggable walls around a living queen's cell are
@@ -186,8 +191,8 @@ void fragment() {
 	if (hash21(FRAGCOORD.xy) > 1.0 - smoothstep(fade_start, fade_end, dist)) {
 		discard;
 	}
-	vec3 green = mix(vec3(0.10, 0.55, 0.06), vec3(0.40, 0.80, 0.10), rnd);
-	vec3 dry = mix(vec3(0.62, 0.50, 0.16), vec3(0.88, 0.76, 0.36), rnd);
+	vec3 green = mix(vec3(0.14, 0.40, 0.10), vec3(0.40, 0.56, 0.15), rnd);
+	vec3 dry = mix(vec3(0.55, 0.47, 0.24), vec3(0.76, 0.68, 0.40), rnd);
 	vec3 base = mix(green, dry, kind.x);
 	base = mix(base, base * vec3(0.5, 0.65, 0.55), kind.y);
 	ALBEDO = mix(base * 0.6, base * 1.35, tip);
@@ -209,6 +214,7 @@ var debug := DebugTools.new()   # test teleports (backslash key) and printouts: 
 var stream := Streaming.new()   # loading, meshing and forgetting the world: see streaming.gd
 var disasters := Disasters.new()   # rockfall and other events: see disasters.gd
 var dig := Digging.new()   # digging, filling, smoothing: see digging.gd
+var targeting := Targeting.new()   # lock-on for fights: see targeting.gd
 var abilities := Abilities.new()   # acid spray, classes, rocks, fire: see abilities.gd
 var building := Building.new()   # placing things, the build ghost, colony storage: see building.gd
 var ui := GameHud.new()   # HUD, bars, map updates, messages: see game_hud.gd
@@ -251,6 +257,7 @@ func _ready() -> void:
 	ui.setup(self)
 	building.setup(self)
 	abilities.setup(self)
+	targeting.setup(self)
 	dig.setup(self)
 	disasters.setup(self)
 	water.setup(self)
@@ -354,6 +361,7 @@ func _process(delta: float) -> void:
 	gfx.update(delta)
 	dig.handle_dig(delta)
 	dig.update_brush_preview()
+	targeting.process(delta)
 	abilities.handle_spray(delta)
 	abilities.handle_fire(delta)
 	stream.stream_world(delta)
@@ -433,6 +441,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				dig.change_brush(BRUSH_STEP)
 			KEY_Y:
 				abilities.convert_soil_to_rock()
+			KEY_QUOTELEFT:
+				targeting.toggle()
+			KEY_I:
+				targeting.cycle()
 			KEY_V:
 				abilities.throw_rock()
 			KEY_N:
@@ -488,6 +500,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not building.build_mode:
 				dig.change_brush(BRUSH_STEP if event.button_index == MOUSE_BUTTON_WHEEL_UP else -BRUSH_STEP)
+			return
+		if event.button_index == MOUSE_BUTTON_MIDDLE and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			targeting.toggle()
 			return
 		# First click after pressing Esc just recaptures the mouse.
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:

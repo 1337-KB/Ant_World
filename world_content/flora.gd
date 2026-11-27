@@ -79,7 +79,9 @@ static func get_mesh(id: int) -> ArrayMesh:
 		meshes[id] = build(id)
 	return meshes[id]
 
-static func make_material(id: int, fade_near: float, fade_far: float) -> StandardMaterial3D:
+static func make_material(id: int, fade_near: float, fade_far: float) -> Material:
+	if PlantSway.flora_sways(id):
+		return PlantSway.flora_material(id, fade_near, fade_far)   # moves in the wind
 	var m := StandardMaterial3D.new()
 	m.vertex_color_use_as_albedo = true
 	m.roughness = 0.85
@@ -102,6 +104,7 @@ class Builder:
 	var idx := PackedInt32Array()
 
 	func add(prim: PrimitiveMesh, xf: Transform3D, color: Color) -> void:
+		color = Look.mute(color)   # natural, earthy tones (look.gd)
 		var arrays := prim.get_mesh_arrays()
 		var v: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		var n: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]

@@ -23,7 +23,7 @@ const BIOME_COLORS := [
 const BIOME_NAMES := ["Forest", "Desert", "Highlands", "Tundra", "Swamp", "Savanna", "Plains"]
 const WATER_COLOR := Color(0.2, 0.45, 0.75)
 
-var half := 7200.0
+var half := Main.HALF * 1.0
 var biome_fn: Callable         # (x, z) -> biome index
 var edge_fn: Callable          # (x, z) -> distance to the world's edge
 var river_width := 17.0
@@ -42,6 +42,7 @@ var queen_pos := Vector2.INF
 var mounds: Array = []         # {"pos": Vector2, "dead": bool}
 var trail := PackedVector2Array()   # your pheromone drops, as world (x, z)
 var lakes: Array = []          # {"pos": Vector2, "radius": float, "outline": PackedVector2Array}
+var cabins: Array = []         # world (x, z) of log cabins you have come near
 var reveal_timer := 0.0
 
 func _ready() -> void:
@@ -111,6 +112,12 @@ func note_mound(pos: Vector2, dead: bool) -> void:
 			m["dead"] = dead
 			return
 	mounds.append({"pos": pos, "dead": dead})
+
+func note_cabin(pos: Vector2) -> void:
+	for c in cabins:
+		if (c as Vector2).distance_to(pos) < 1.0:
+			return
+	cabins.append(pos)
 
 func note_lake(pos: Vector2, radius: float, outline: PackedVector2Array) -> void:
 	for l in lakes:
@@ -209,6 +216,19 @@ func _draw() -> void:
 		var label := "Colony gone" if m["dead"] else "Termite mound"
 		draw_string(font, mp + Vector2(18, 6), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(0, 0, 0), 4)
 		draw_string(font, mp + Vector2(18, 6), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(1, 1, 1))
+
+	# Log cabins.
+	for cb in cabins:
+		var cp: Vector2 = to_screen.call(cb)
+		if not inside.call(cp):
+			continue
+		var roof := PackedVector2Array([cp + Vector2(-11, -1), cp + Vector2(0, -11), cp + Vector2(11, -1)])
+		draw_rect(Rect2(cp + Vector2(-8, -1), Vector2(16, 10)), Color(0.55, 0.36, 0.18), true)
+		draw_rect(Rect2(cp + Vector2(-8, -1), Vector2(16, 10)), Color(0, 0, 0), false, 2.0)
+		draw_colored_polygon(roof, Color(0.7, 0.25, 0.15))
+		draw_polyline(PackedVector2Array([roof[0], roof[1], roof[2], roof[0]]), Color(0, 0, 0), 2.0)
+		draw_string(font, cp + Vector2(14, 8), "Cabin", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0, 0, 0), 4)
+		draw_string(font, cp + Vector2(14, 8), "Cabin", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1))
 
 	# Start.
 	var sp: Vector2 = to_screen.call(start_pos)

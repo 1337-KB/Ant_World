@@ -208,8 +208,8 @@ func setup_environment() -> void:
 	env.glow_enabled = true
 	env.glow_intensity = 0.6
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 1.2
-	env.adjustment_contrast = 1.08
+	env.adjustment_saturation = 0.92
+	env.adjustment_contrast = 1.05
 
 	var we := WorldEnvironment.new()
 	we.environment = env

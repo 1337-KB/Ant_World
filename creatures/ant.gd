@@ -16,6 +16,7 @@ const CAMERA_DISTANCE := 6.5 * BODY_SCALE # how far behind the ant it sits
 const SENSITIVITY := 0.0015  # mouse look speed
 const MOUSE_SMOOTH := 12.0   # how fast mouse movement is applied (lower = softer)
 const A_D_TURNS := true      # true: A and D steer the ant. false: they strafe sideways.
+const LOCK_BODY_FACE_RATE := 12.0   # how quickly the body swings to face where it is walking while locked on
 const KEY_TURN_SPEED := 1.6  # radians per second when steering with A and D
 const CAPACITY := 50         # max of each resource type
 const PICKUP_RANGE := 1.6    # how close you must be to absorb a pickup
@@ -100,6 +101,11 @@ var acid_locked := false      # true after running dry, until it refills a bit
 var energy := ENERGY_MAX      # sprint energy
 var exhausted := false       # true after running out, until energy recovers
 var sprinting := false
+const LOCK_BREAKAWAY := 99.0   # the lock always holds the enemy in sight (lower this, in radians, to let it release when you turn far away)
+const LOCK_TURN_RATE := 10.0   # how firmly the camera follows the enemy (lower = looser)
+var cam_yaw := 0.0             # how far the camera is turned from the body's facing while locked on
+var lock_engaged := false      # true while the lock is actually steering the camera
+var lock_target: Creature      # the enemy you are locked on to (see targeting.gd): the camera keeps it in sight
 var focus_node: Node3D        # a boss move makes the camera swing to look at this for a moment
 var focus_time := 0.0
 var webbed_time := 0.0          # stuck in web (a boss spider's shot): cannot walk, jump or dash
@@ -143,11 +149,15 @@ func _ready() -> void:
 	# Spring arm so the camera never goes inside terrain.
 	var arm := SpringArm3D.new()
 	arm.spring_length = CAMERA_DISTANCE
-	arm.margin = 0.3
+	arm.margin = 0.5
+	var arm_shape := SphereShape3D.new()   # a fat probe, so the camera keeps clear of walls instead of poking through them
+	arm_shape.radius = 0.45
+	arm.shape = arm_shape
 	arm.add_excluded_object(get_rid())
 	pivot.add_child(arm)
 
 	camera = Camera3D.new()
+	camera.near = 0.05
 	arm.add_child(camera)
 	camera.make_current()
 
@@ -286,6 +296,50 @@ func _blob(mat: StandardMaterial3D, radius: float, squash: Vector3, pos: Vector3
 	mi.position = pos
 	model.add_child(mi)
 
+# ---------- Seeing the ant through trees and bushes ----------
+# A glowing silhouette of the ant is drawn over the ant's own meshes, but only on the pixels where
+# something nearer (a bush, a tree, a rock) is in front of it. The shader compares the scene depth
+# with the ant's depth for every pixel, so there is no guessing about what blocks the view.
+const XRAY_SHADER := """
+shader_type spatial;
+render_mode unshaded, depth_test_disabled, shadows_disabled;
+
+uniform sampler2D depth_tex : hint_depth_texture, repeat_disable, filter_nearest;
+uniform vec4 tint : source_color = vec4(1.0, 0.82, 0.45, 0.6);
+uniform float margin = 0.8;
+
+void fragment() {
+	float depth = texture(depth_tex, SCREEN_UV).x;
+	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
+	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+	view.xyz /= view.w;
+	float scene_depth = -view.z;
+	// Visible normally unless something closer than the ant (by more than the ant's own thickness) is in front.
+	if (scene_depth > -VERTEX.z - margin) {
+		discard;
+	}
+	ALBEDO = tint.rgb;
+	ALPHA = tint.a;
+}
+"""
+var xray_mat: ShaderMaterial
+
+func update_xray(_delta: float) -> void:
+	if xray_mat != null or model == null:
+		return
+	var shader := Shader.new()
+	shader.code = XRAY_SHADER
+	xray_mat = ShaderMaterial.new()
+	xray_mat.shader = shader
+	xray_mat.render_priority = 20
+	set_xray(model, xray_mat)
+
+func set_xray(node: Node, mat: Material) -> void:
+	if node is MeshInstance3D:
+		(node as MeshInstance3D).material_overlay = mat
+	for child in node.get_children():
+		set_xray(child, mat)
+
 func update_model(delta: float) -> void:
 	# Legs swing faster the faster the ant moves.
 	var moving := clampf(velocity.length() / SPEED, 0.0, 1.0)
@@ -336,6 +390,25 @@ func _process(delta: float) -> void:
 	basis = basis.rotated(basis.y, step_yaw).orthonormalized()
 	pivot.rotation.x = clampf(pivot.rotation.x + step_pitch, -1.3, 0.8)
 
+	# Locked on: the camera holds the enemy in sight (cam_yaw), while the body is still yours to steer
+	# with A and D and walk anywhere with W, so you can run away facing the enemy.
+	var locked := lock_target != null and is_instance_valid(lock_target) and not controls_locked
+	lock_engaged = false
+	if locked:
+		look_yaw = 0.0   # the mouse does not turn you away while the lock holds
+		look_pitch = 0.0
+		var lt := basis.inverse() * (lock_target.hit_center() - pivot.global_position)
+		var lflat := Vector2(lt.x, lt.z).length()
+		var lyaw := atan2(-lt.x, -lt.z)
+		if absf(lyaw) < LOCK_BREAKAWAY and lflat > 0.3:
+			lock_engaged = true
+			cam_yaw = lerp_angle(cam_yaw, lyaw, minf(1.0, LOCK_TURN_RATE * delta))   # only the camera turns; the body stays as you steer it
+			var lpitch := clampf(atan2(lt.y, maxf(lflat, 0.3)), -0.9, 0.7)
+			pivot.rotation.x = lerpf(pivot.rotation.x, lpitch, minf(1.0, LOCK_TURN_RATE * 0.8 * delta))
+
+	if not lock_engaged:
+		cam_yaw = lerp_angle(cam_yaw, 0.0, minf(1.0, 3.0 * delta))   # lock off: the camera swings back behind the body
+
 	# The camera swings toward whatever a boss move wants you to see. Moving the mouse still works.
 	if focus_time > 0.0:
 		focus_time -= delta
@@ -352,7 +425,7 @@ func _process(delta: float) -> void:
 
 	# A and D steer the ant, easing in and out. Left = positive turn.
 	var turn_target := 0.0
-	if A_D_TURNS and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not controls_locked:
+	if A_D_TURNS and not lock_engaged and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not controls_locked:
 		if Input.is_key_pressed(KEY_A): turn_target += 1.0
 		if Input.is_key_pressed(KEY_D): turn_target -= 1.0
 	key_turn = lerpf(key_turn, turn_target * KEY_TURN_SPEED, minf(1.0, 6.0 * delta))
@@ -362,9 +435,13 @@ func _process(delta: float) -> void:
 	# Camera position follows the ant exactly, but orientation eases toward the ant's.
 	rig.global_position = global_position
 	var target := global_transform.basis.orthonormalized()
+	if cam_yaw != 0.0:
+		target = target.rotated(target.y, cam_yaw).orthonormalized()   # locked on: the camera looks at the enemy while the body points elsewhere
 	var current := rig.global_transform.basis.orthonormalized()
 	rig.global_transform.basis = current.slerp(target, minf(1.0, CAMERA_FOLLOW * delta)).orthonormalized()
+	keep_camera_in_open(delta)
 	update_model(delta)
+	update_xray(delta)
 
 func _physics_process(delta: float) -> void:
 	detach_timer -= delta
@@ -388,10 +465,26 @@ func _physics_process(delta: float) -> void:
 	if not controls_locked:
 		if Input.is_key_pressed(KEY_W): input.z -= 1.0
 		if Input.is_key_pressed(KEY_S): input.z += 1.0
-	if not A_D_TURNS and not controls_locked:
+	# Left and Right arrows slide sideways (strafe), so you can circle an enemy while A and D still turn.
+	if not controls_locked:
+		if Input.is_key_pressed(KEY_LEFT): input.x -= 1.0
+		if Input.is_key_pressed(KEY_RIGHT): input.x += 1.0
+	if (not A_D_TURNS or lock_engaged) and not controls_locked:   # locked on: A and D slide left and right of the camera
 		if Input.is_key_pressed(KEY_A): input.x -= 1.0
 		if Input.is_key_pressed(KEY_D): input.x += 1.0
 	var dir := (basis * input).normalized()
+	if lock_engaged:
+		# Locked on, the controls follow the CAMERA: W goes away from it, S toward it, A and D left and
+		# right of it. The body turns to face where it is going, so after you spin round, S walks
+		# toward the head. Nothing here is tied to which way the body happened to be pointing.
+		var cam_basis := basis.rotated(basis.y, cam_yaw)
+		dir = (cam_basis * input).normalized()
+		if dir != Vector3.ZERO:
+			var local := basis.inverse() * dir
+			var want := atan2(-local.x, -local.z)
+			var turn := want * minf(1.0, LOCK_BODY_FACE_RATE * delta)
+			basis = basis.rotated(basis.y, turn).orthonormalized()
+			cam_yaw -= turn   # keep the camera where it was while the body swings round
 	if webbed_time > 0.0:
 		dir = Vector3.ZERO
 
@@ -564,6 +657,19 @@ func find_surface(dir: Vector3) -> Variant:
 
 	return null
 
+# In a tight tunnel the camera pivot (above the ant) can end up inside solid ground, and then the
+# camera looks out through the wall at the void behind it. Lower the pivot so it stays in open air.
+func keep_camera_in_open(delta: float) -> void:
+	var up := basis.y
+	var from := global_position + up * 0.25
+	var want := CAMERA_HEIGHT
+	var hit := cast_ray(from, global_position + up * (want + 0.35))
+	if not hit.is_empty():
+		want = maxf(0.3, from.distance_to(hit["position"]) - 0.35 + 0.25)
+	var cur := pivot.position.y
+	# Drop fast when blocked, rise back slowly.
+	pivot.position.y = want if want < cur else lerpf(cur, want, minf(1.0, 5.0 * delta))
+
 func cast_ray(from: Vector3, to: Vector3) -> Dictionary:
 	var query := PhysicsRayQueryParameters3D.create(from, to)
 	query.exclude = [get_rid()]
@@ -701,6 +807,7 @@ func show_armor() -> void:
 		plate.scale = Vector3(0.42, 0.1, 0.3)
 		plate.position = Vector3(0, 0.3, -0.15 + 0.3 * float(armor_plates.size()))
 		model.add_child(plate)
+		plate.material_overlay = xray_mat
 		armor_plates.append(plate)
 
 func apply_poison(seconds: float, dps: float) -> void:
